@@ -1,179 +1,115 @@
-# Tailscale Android Client
+# Tailware
 
-https://tailscale.com
+<p align="center">
+  <img src="branding/tailware-logo.png" alt="Tailware logo" width="180">
+</p>
 
-Private WireGuard® networks made easy
+Tailware is an independent, open-source Tailscale client designed for Wear OS.
+It turns a smartwatch into a full tailnet device while keeping the interface
+focused on the controls that make sense on a small round screen.
 
-## Overview
+> **Development status:** early private preview. The app is not ready for
+> production use or public distribution yet.
 
-This repository contains the open source Tailscale Android client.
+Tailware is based on the open-source
+[Tailscale Android client](https://github.com/tailscale/tailscale-android).
+It is not affiliated with or endorsed by Tailscale Inc.
 
-## Using
+## First-version scope
 
-#### Tailscale Packages
+- Guided first-run sign-in with browser/QR, auth key, or a custom
+  Headscale/control-server URL
+- A watch-first dashboard with one large connect/disconnect control
+- Own device name, Tailscale IP addresses, MagicDNS name, tailnet, and tunnel
+  status
+- Tailnet device list with peer details and ping/latency testing
+- Exit-node selection, exit-node clearing, and local-LAN access
+- Tailscale DNS on/off
+- English, Dutch, French, and German interface choices
+- Optional connected/disconnected notifications
+- In-app Tailware version, source attribution, and full BSD 3-Clause notice
+- Wear OS Tile for status plus either a quick connection toggle or an
+  open-app action, backed by a battery-friendly cached status
+- VPN setup guidance, Android's normal consent flow, and a documented safe ADB
+  fallback for watches that cannot display the system VPN dialog
+- Optional always-on VPN setup with lockdown deliberately disabled
+- Layouts made for round screens and smaller Wear OS displays
 
-The latest stable release APK can be obtained from the [Tailscale Packages Stable Track](https://pkgs.tailscale.com/stable/#android).
+## Platform
 
-Unstable releases can be obtained from the [Tailscale Packages Unstable Track](https://pkgs.tailscale.com/unstable/#android).
+- Wear OS 3 or newer
+- Android API 30 minimum
+- Android API 36 target
+- Standalone watch app; a companion phone app is not required
 
-These APKs include all supported platforms and architectures.  For installing compact APKs, Android TV, or if you want automatic updates, visit the [Google Play Store](https://play.google.com/store/apps/details?id=com.tailscale.ipn).
+The initial hardware target is a Samsung Galaxy Watch5 Pro. The design avoids
+Samsung-only APIs so it can also run on compatible watches from other
+manufacturers. Physical-device compatibility still needs to be verified before
+the first public release.
 
-#### Google Playstore
+## VPN authorization on Wear OS
 
-[<img src="https://play.google.com/intl/en_us/badges/images/generic/en-play-badge.png"
-     alt="Get it on Google Play"
-     height="80">](https://play.google.com/store/apps/details?id=com.tailscale.ipn)
+Tailware first calls Android's standard `VpnService.prepare()` flow. Some Wear
+OS builds do not expose a usable VPN-consent screen. For those watches, use the
+repository's guarded PowerShell helper after installing the APK and connecting
+the watch through wireless debugging:
 
-Help us test new features and bug-fixes before they ship to all users! A [beta testing track](https://play.google.com/apps/testing/com.tailscale.ipn) is available on the Play Store. 
-
-#### Amazon Appstore
-
-The app can be downloaded from the [Amazon Appstore](https://www.amazon.com/dp/B0D38TRB3N) for Amazon Fire tablets and Fire TV devices.
-
-#### F-Droid
-
-The [F-Droid](https://f-droid.org/packages/com.tailscale.ipn/) project builds the source code in this repository and maintains independently-built APKs. Note that F-Droid builds are not released, updated, or verified by the Tailscale team.
-
-## Preparing a build environment
-
-There are several options for setting up a build environment. The Android Studio
-path is the most useful path for longer term development.
-
-In all cases you will need:
-
-- Go runtime
-- Android SDK
-- Android SDK components (`make androidsdk` will install them)
-
-### Android Studio
-
-1. Install a Go runtime (https://go.dev/dl/).
-2. Install Android Studio (https://developer.android.com/studio).
-3. Start Android Studio, from the Welcome screen select "More Actions" and "SDK Manager".
-4. In the SDK manager, select the "SDK Tools" tab and install the "Android SDK Command-line Tools (latest)".
-3. Run `make androidsdk` to install the necessary SDK components.
-
-If you would prefer to avoid Android Studio, you can also install an Android
-SDK. The makefile detects common paths, so `sudo apt install android-sdk` is
-sufficient on Debian / Ubuntu systems. To use an Android SDK installed in a
-non-standard location, set the `ANDROID_SDK_ROOT` environment variable to the
-path to the SDK.
-
-If you installed Android Studio the tools may not be in your path. To get the
-correct tool path, run `make androidpath` and export the provided path in your
-shell.
-
-#### Code Formatting
-
-The ktmft plugin on the default setting should be used to autoformat all Java, Kotlin
-and XML files in Android Studio.  Enable "Format on Save".
-
-### Docker
-
-If you wish to avoid installing software on your host system, a Docker based development strategy is available, you can build and start a shell with:
-
-```sh
-make docker-shell
+```powershell
+.\tools\authorize-wear-vpn.ps1
 ```
 
-Several other makefile recipes are available for setting up the proper build environment and running builds.
+The required authorization is the `ACTIVATE_VPN` AppOp. It is **not** a runtime
+permission and cannot be granted with `pm grant`.
 
-Note that the docker makefile recipes s will preserve the image and remove container on completion.
-If changes are made to the build environment or toolchain, cached docker images may need to be rebuilt.
-The docker build image name is parameterized in the makefile and changing it provides a simple means to do this.
+Read [docs/wear-vpn-setup.md](docs/wear-vpn-setup.md) for pairing, device
+selection, verification, optional always-on setup, revocation, and
+troubleshooting.
 
-### Nix
+## Build
 
-If you have Nix 2.4 or later installed, a Nix development environment can
-be set up with:
+The project retains Tailscale's Go/Android architecture. A build needs:
 
-```sh
-alias nix='nix --extra-experimental-features "nix-command flakes"'
-nix develop
+- JDK 17 or newer
+- Go
+- Android SDK with API 36 and NDK `23.1.7779620`
+- `gomobile` and `gobind`
+
+Generate `tailscale.version` with the existing project tooling, then build the
+native Android archive:
+
+```powershell
+.\tools\build-native-local.ps1
 ```
 
-The flake provides host tools such as Java, `make`, `curl`, and `git`, and
-points the build at a repo-local Android SDK in `./android-sdk`. The SDK
-directory is ignored by Git and is reused across builds.
+Compile the app:
 
-On first use, install the Android SDK components:
-
-```sh
-make androidsdk
+```powershell
+cd android
+.\gradlew.bat ktfmtCheck testDebugUnitTest lintDebug assembleDebug
 ```
 
-Then build normally:
+The debug APK is written to:
 
-```sh
-make tailscale-debug
+```text
+android/build/outputs/apk/debug/android-debug.apk
 ```
 
-The debug APK is written to `./tailscale-debug.apk`.
+Local SDK files, generated version metadata, native archives, and APKs are
+ignored by Git.
 
-For one-shot commands without entering an interactive shell:
+The checked-in lint baseline records inherited upstream Android cleanup work.
+New lint findings still fail the build because `warningsAsErrors` remains
+enabled.
 
-```sh
-nix develop --command make androidsdk
-nix develop --command make tailscale-debug
-```
+## Security and privacy
 
-For faster Kotlin-only iteration while avoiding the `gomobile bind` step:
+Tailware creates an Android VPN interface and can therefore handle traffic
+routed through it. Only install builds from a source you trust. The ADB helper
+shows its target and proposed operation, refuses ambiguous device selection,
+checks the installed package, and verifies the resulting VPN authorization.
 
-```sh
-nix develop --command bash -lc 'cd android && ./gradlew ktfmtCheck compileDebugKotlin'
-```
+## License and attribution
 
-## Building
-
-```sh
-make apk
-make install
-```
-
-## Building a release
-
-Use `make tag_release` to bump the Android version code, update the version
-name, and tag the current commit.
-
-We only guarantee to support the latest Go release and any Go beta or
-release candidate builds (currently Go 1.14) in module mode. It might
-work in earlier Go versions or in GOPATH mode, but we're making no
-effort to keep those working.
-
-## Developing on a Fire Stick TV
-
-On the Fire Stick:
-
-* Settings > My Fire TV > Developer Options > ADB Debugging > ON
-
-Then some useful commands:
-```
-adb connect 10.2.200.213:5555
-adb install -r tailscale-fdroid.apk
-adb shell am start -n com.tailscale.ipn/com.tailscale.ipn.MainActivity
-adb shell pm uninstall com.tailscale.ipn
-```
-
-## Bugs
-
-Please file any issues about this code or the hosted service on
-[the tailscale issue tracker](https://github.com/tailscale/tailscale/issues).
-
-## Contributing
-
-`under_construction.gif`
-
-PRs welcome, but we are still working out our contribution process and
-tooling.
-
-We require [Developer Certificate of
-Origin](https://en.wikipedia.org/wiki/Developer_Certificate_of_Origin)
-`Signed-off-by` lines in commits.
-
-## About Us
-
-We are [Tailscale](https://tailscale.com). See
-https://tailscale.com/company for more about us and what we're
-building.
-
-WireGuard is a registered trademark of Jason A. Donenfeld.
+The source remains under the repository's BSD 3-Clause license. Existing
+Tailscale copyright and license notices are retained. Tailscale and WireGuard
+are trademarks of their respective owners.

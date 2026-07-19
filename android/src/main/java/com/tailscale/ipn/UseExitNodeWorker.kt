@@ -13,6 +13,7 @@ import com.tailscale.ipn.UninitializedApp.Companion.STATUS_CHANNEL_ID
 import com.tailscale.ipn.ui.localapi.Client
 import com.tailscale.ipn.ui.model.Ipn
 import com.tailscale.ipn.ui.notifier.Notifier
+import com.tailscale.ipn.wear.WearMainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -79,10 +80,7 @@ class UseExitNodeWorker(appContext: Context, workerParams: WorkerParameters) :
     val result = runAndGetResult()
 
     return if (result != null) {
-      val intent =
-          Intent(app, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-          }
+      val intent = Intent(app, WearMainActivity::class.java)
       val pendingIntent: PendingIntent =
           PendingIntent.getActivity(
               app, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)

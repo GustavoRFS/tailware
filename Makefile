@@ -4,6 +4,7 @@
 
 ## For signed release build JKS_PASSWORD must be set to the password for the jks keystore
 ## and JKS_PATH must be set to the path to the jks keystore.
+## JKS_ALIAS defaults to "tailware" and can be overridden for an existing keystore.
 
 # The docker image to use for the build environment.  Changing this
 # will force a rebuild of the docker image.  If there is an existing image
@@ -27,9 +28,9 @@ export TS_USE_TOOLCHAIN=1
 # affordances for debugging it.
 GOMOBILE_BUILD_TAGS := ts_omit_cachenetmap
 
-DEBUG_APK := tailscale-debug.apk
-RELEASE_AAB := tailscale-release.aab
-RELEASE_TV_AAB := tailscale-tv-release.aab
+DEBUG_APK := tailware-debug.apk
+RELEASE_AAB := tailware-release.aab
+JKS_ALIAS ?= tailware
 
 # Define output filenames.
 LIBTAILSCALE_AAR := android/libs/libtailscale.aar
@@ -47,7 +48,7 @@ else
     ANDROID_TOOLS_URL := "https://dl.google.com/android/repository/commandlinetools-mac-9477386_latest.zip"
     ANDROID_TOOLS_SUM := "2072ffce4f54cdc0e6d2074d2f381e7e579b7d63e915c220b96a7db95b2900ee  commandlinetools-mac-9477386_latest.zip"
 endif
-ANDROID_SDK_PACKAGES := 'platforms;android-34' 'extras;android;m2repository' 'ndk;23.1.7779620' 'platform-tools' 'build-tools;34.0.0'
+ANDROID_SDK_PACKAGES := 'platforms;android-36' 'extras;android;m2repository' 'ndk;23.1.7779620' 'platform-tools' 'build-tools;35.0.0'
 
 # Attempt to find an ANDROID_SDK_ROOT / ANDROID_HOME based either from
 # preexisting environment or common locations.
@@ -130,22 +131,21 @@ debug-unstripped: build-unstripped-aar
 .PHONY: apk
 apk: $(DEBUG_APK)
 
+.PHONY: tailware-debug
+tailware-debug: $(DEBUG_APK)
+
+# Compatibility alias retained for contributors used to the upstream target.
 .PHONY: tailscale-debug
-tailscale-debug: $(DEBUG_APK)
+tailscale-debug: tailware-debug
 
 $(DEBUG_APK): libtailscale debug-symbols version gradle-dependencies build-unstripped-aar
 	(cd android && ./gradlew test assembleDebug)
 	install -C android/build/outputs/apk/debug/android-debug.apk $@
 
-# Builds the release AAB and signs it (phone/tablet/chromeOS variant)
+# Builds and signs the Wear OS release AAB.
 .PHONY: release
 release: jarsign-env $(RELEASE_AAB)
-	@jarsigner -sigalg SHA256withRSA -digestalg SHA-256 -keystore $(JKS_PATH) -storepass $(JKS_PASSWORD) $(RELEASE_AAB) tailscale
-
-# Builds the release AAB and signs it (androidTV variant)
-.PHONY: release-tv
-release-tv: jarsign-env $(RELEASE_TV_AAB)
-	@jarsigner -sigalg SHA256withRSA -digestalg SHA-256 -keystore $(JKS_PATH) -storepass $(JKS_PASSWORD) $(RELEASE_TV_AAB) tailscale
+	@jarsigner -sigalg SHA256withRSA -digestalg SHA-256 -keystore $(JKS_PATH) -storepass $(JKS_PASSWORD) $(RELEASE_AAB) $(JKS_ALIAS)
 
 # gradle-dependencies groups together the android sources and libtailscale needed to assemble tests/debug/release builds.
 .PHONY: gradle-dependencies
@@ -154,23 +154,6 @@ gradle-dependencies: $(shell find android -type f -not -path "android/build/*" -
 $(RELEASE_AAB): version gradle-dependencies
 	@echo "Building release AAB"
 	(cd android && ./gradlew test bundleRelease)
-	install -C ./android/build/outputs/bundle/release/android-release.aab $@
-
-# PLATFORM=tv signals to gradle that we should build for AndroidTV. To
-# distinguish the TV variant from the phone/tablet build in the Play Store,
-# we temporarily increment the versionCode in android/build.gradle by 1 for
-# the duration of the build, then restore the original value via a shell trap
-# so the working tree is left clean even if the gradle build fails.
-$(RELEASE_TV_AAB): version gradle-dependencies
-	@echo "Building TV release AAB"
-	@set -e; \
-		ORIG_VC=$$(grep -oE 'versionCode [0-9]+' android/build.gradle | awk '{print $$2}'); \
-		TV_VC=$$((ORIG_VC + 1)); \
-		echo "TV versionCode: $$ORIG_VC -> $$TV_VC"; \
-		trap "sed -i.bak -E 's/versionCode [0-9]+/versionCode $$ORIG_VC/' android/build.gradle && rm -f android/build.gradle.bak" EXIT INT TERM HUP; \
-		sed -i.bak -E "s/versionCode [0-9]+/versionCode $$TV_VC/" android/build.gradle; \
-		rm -f android/build.gradle.bak; \
-		(cd android && ./gradlew test bundleRelease -PPLATFORM=tv)
 	install -C ./android/build/outputs/bundle/release/android-release.aab $@
 
 tailscale-test.apk: version gradle-dependencies
@@ -276,7 +259,7 @@ ifeq ($(JKS_PATH),)
 	$(error JKS_PATH is not set.  export JKS_PATH=/path/to/tailcale.jks)
 endif
 ifeq ($(JKS_PASSWORD),)
-	$(error JKS_PASSWORD is not set.  export JKS_PASSWORD=passwordForTailcale.jks)
+	$(error JKS_PASSWORD is not set.  export JKS_PASSWORD='<keystore-password>')
 endif
 ifeq ($(wildcard $(JKS_PATH)),)
 	$(error JKS_PATH does not point to a file)
@@ -383,7 +366,7 @@ install: $(DEBUG_APK) ## Install the debug APK on a connected device
 
 .PHONY: run
 run: install ## Run the debug APK on a connected device
-	adb shell am start -n com.tailscale.ipn/com.tailscale.ipn.MainActivity
+	adb shell am start -n io.github.vladbezm.tailware/com.tailscale.ipn.wear.WearMainActivity
 
 .PHONY: docker-build-image
 docker-build-image: ## Builds the docker image for the android build environment if it does not exist
@@ -427,12 +410,15 @@ DOCKER_RUN_VOLS := -v $(CURDIR):/build/tailscale-android -v $(DOCKER_ANDROID_DIR
 docker-run-build: clean jarsign-env docker-build-image docker-android-dir ## Runs the docker image for the android build environment and builds release
 	@docker run --rm $(DOCKER_RUN_VOLS) --env JKS_PASSWORD=$(JKS_PASSWORD) --env JKS_PATH=$(JKS_PATH) $(DOCKER_IMAGE)
 
+.PHONY: docker-tailware-debug
+docker-tailware-debug: docker-build-image docker-android-dir ## Build tailware-debug.apk inside the docker env (stable signer across runs)
+	@docker run --rm $(DOCKER_RUN_VOLS) $(DOCKER_IMAGE) make tailware-debug
+
 .PHONY: docker-tailscale-debug
-docker-tailscale-debug: docker-build-image docker-android-dir ## Build tailscale-debug.apk inside the docker env (stable signer across runs)
-	@docker run --rm $(DOCKER_RUN_VOLS) $(DOCKER_IMAGE) make tailscale-debug
+docker-tailscale-debug: docker-tailware-debug
 
 .PHONY: android-integration-test
-android-integration-test: docker-tailscale-debug android-integration-test-run ## Build APK and run adb-backed Android integration tests in Docker
+android-integration-test: docker-tailware-debug android-integration-test-run ## Build APK and run adb-backed Android integration tests in Docker
 
 .PHONY: android-integration-test-run
 android-integration-test-run: docker-build-android-integration-image docker-android-integration-dir ## Run adb-backed Android integration tests in Docker using existing APK
@@ -464,7 +450,7 @@ docker-remove-shell-image: ## Removes all docker shell image
 .PHONY: clean
 clean: ## Remove build artifacts. Does not purge docker build envs. Use dockerRemoveEnv for that.
 	@echo "Cleaning up old build artifacts"
-	-rm -rf android/build $(DEBUG_APK) $(RELEASE_AAB) $(RELEASE_TV_AAB) $(LIBTAILSCALE_AAR) android/libs *.apk *.aab
+	-rm -rf android/build $(DEBUG_APK) $(RELEASE_AAB) $(LIBTAILSCALE_AAR) android/libs *.apk *.aab
 	@echo "Cleaning cached toolchain"
 	-rm -rf $(HOME)/.cache/tailscale-go{,.extracted}
 	-pkill -f gradle

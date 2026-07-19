@@ -30,8 +30,10 @@
     <string name="cancel">Cancel</string>
 
     <!-- Strings for the about screen -->
-    <string name="app_name" translatable="false">Tailscale</string>
-    <string name="tile_name" translatable="false">Tailscale</string>
+    <string name="app_name" translatable="false">Tailware</string>
+    <string name="tile_name" translatable="false">Tailware</string>
+    <string name="tailware_tile_name">Tailware connection</string>
+    <string name="tailware_tile_description">Monitor and control the Tailware connection</string>
     <string name="version">Version</string>
     <string name="about_view_header">About Tailscale</string>
     <string name="about_view_title">Tailscale for Android</string>

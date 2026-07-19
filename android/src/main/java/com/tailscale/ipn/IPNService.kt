@@ -6,24 +6,20 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.VpnService
-import android.os.Build
 import android.system.OsConstants
 import com.tailscale.ipn.mdm.MDMSettings
 import com.tailscale.ipn.ui.model.Ipn
 import com.tailscale.ipn.ui.notifier.Notifier
 import com.tailscale.ipn.util.TSLog
+import com.tailscale.ipn.wear.WearMainActivity
+import com.tailscale.ipn.wear.tile.TailwareTileUpdates
 import java.util.UUID
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import libtailscale.Libtailscale
 
 open class IPNService : VpnService(), libtailscale.IPNService {
   private val TAG = "IPNService"
   private val randomID: String = UUID.randomUUID().toString()
   private lateinit var app: App
-  val scope = CoroutineScope(Dispatchers.IO)
   private var closed = false
 
   override fun id(): String {
@@ -32,6 +28,7 @@ open class IPNService : VpnService(), libtailscale.IPNService {
 
   override fun updateVpnStatus(status: Boolean) {
     app.getAppScopedViewModel().setVpnActive(status)
+    TailwareTileUpdates.request(app)
   }
 
   override fun onCreate() {
@@ -69,15 +66,8 @@ open class IPNService : VpnService(), libtailscale.IPNService {
         }
         "android.net.VpnService" -> {
           // This means we were started by Android due to Always On VPN.
-          // We show a non-foreground notification because we weren't
-          // started as a foreground service.
-          scope.launch {
-            // Collect the first value of hideDisconnectAction asynchronously.
-            val hideDisconnectAction = MDMSettings.forceEnabled.flow.first()
-            val exitNodeName =
-                UninitializedApp.getExitNodeName(Notifier.prefs.value, Notifier.netmap.value)
-            app.notifyStatus(true, hideDisconnectAction.value, exitNodeName)
-          }
+          // A system-started VpnService must still promote itself immediately.
+          showForegroundNotification()
           app.setWantRunning(true)
           Libtailscale.requestVPN(this)
           START_STICKY
@@ -135,7 +125,13 @@ open class IPNService : VpnService(), libtailscale.IPNService {
     try {
       startForeground(
           UninitializedApp.STATUS_NOTIFICATION_ID,
-          UninitializedApp.get().buildStatusNotification(true, hideDisconnectAction, exitNodeName))
+          UninitializedApp.get()
+              .buildStatusNotification(
+                  vpnRunning = false,
+                  hideDisconnectAction = hideDisconnectAction,
+                  exitNodeName = exitNodeName,
+                  vpnStarting = true,
+              ))
     } catch (e: Exception) {
       TSLog.e(TAG, "Failed to start foreground service: $e")
     }
@@ -151,7 +147,7 @@ open class IPNService : VpnService(), libtailscale.IPNService {
     return PendingIntent.getActivity(
         this,
         0,
-        Intent(this, MainActivity::class.java),
+        Intent(this, WearMainActivity::class.java),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
   }
 
@@ -177,9 +173,7 @@ open class IPNService : VpnService(), libtailscale.IPNService {
             .setConfigureIntent(configIntent())
             .allowFamily(OsConstants.AF_INET)
             .allowFamily(OsConstants.AF_INET6)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      b.setMetered(false) // Inherit the metered status from the underlying networks.
-    }
+    b.setMetered(false) // Inherit the metered status from the underlying networks.
     b.setUnderlyingNetworks(null) // Use all available networks.
 
     val mdmAllowed =

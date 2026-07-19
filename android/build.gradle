@@ -11,7 +11,7 @@ buildscript {
         }
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.6.1'
+        classpath 'com.android.tools.build:gradle:8.10.1'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
         classpath "org.jetbrains.kotlin:kotlin-serialization:$kotlin_version"
         classpath("com.ncorti.ktfmt.gradle:plugin:0.17.0")
@@ -21,9 +21,6 @@ buildscript {
 repositories {
     google()
     mavenCentral()
-    flatDir {
-        dirs 'libs'
-    }
 }
 
 apply plugin: 'kotlin-android'
@@ -33,16 +30,15 @@ apply plugin: 'com.ncorti.ktfmt.gradle'
 
 android {
     ndkVersion "23.1.7779620"
-    compileSdkVersion 34
+    compileSdkVersion 36
     defaultConfig {
-        minSdkVersion 26
-        targetSdkVersion 35
-        // versionCode is written here by `make bumposs` / `make tag_release`
-        // (base = major*100000000 + minor*100000 + patch*10). AndroidTV builds
-        // increment this by 1 in the Makefile's release-tv target so the two
-        // variants are distinguishable in the Play Store.
-        versionCode 110102450
-        versionName getVersionProperty("VERSION_LONG")
+        applicationId "io.github.vladbezm.tailware"
+        minSdkVersion 30
+        targetSdkVersion 36
+        // Tailware has its own app-version line; the native Tailscale engine keeps
+        // its upstream version metadata through tailscale.version.
+        versionCode 10001
+        versionName "0.1.0-private.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
         // This setting, which defaults to 'true', will cause Tailscale to fall
@@ -61,14 +57,17 @@ android {
 
     lintOptions {
         warningsAsErrors true
+        baseline file("lint-baseline.xml")
     }
 
     kotlinOptions {
         jvmTarget = "17"
     }
-
-    kotlinOptions {
-        jvmTarget = "17"
+    bundle {
+        // Tailware lets the wearer switch between every bundled language at runtime.
+        language {
+            enableSplit = false
+        }
     }
     buildFeatures {
         buildConfig true
@@ -83,17 +82,13 @@ android {
     buildTypes {
         applicationTest {
             initWith debug
-            manifestPlaceholders.leanbackRequired = isTV()
             buildConfigField "String", "GITHUB_USERNAME", "\"" + getLocalProperty("githubUsername", "")+"\""
             buildConfigField "String", "GITHUB_PASSWORD", "\"" + getLocalProperty("githubPassword", "")+"\""
             buildConfigField "String", "GITHUB_2FA_SECRET", "\"" + getLocalProperty("github2FASecret", "")+"\""
         }
         debug {
-            manifestPlaceholders.leanbackRequired = isTV()
         }
         release {
-            manifestPlaceholders.leanbackRequired = isTV()
-
             minifyEnabled true
 
             shrinkResources true
@@ -138,6 +133,18 @@ dependencies {
     implementation "com.google.accompanist:accompanist-systemuicontroller:$accompanist_version"
     implementation "androidx.core:core-splashscreen:1.1.0-rc01"
     implementation "androidx.compose.animation:animation:1.7.4"
+    implementation "androidx.lifecycle:lifecycle-runtime-compose:2.8.6"
+
+    // Wear OS UI and Tile dependencies. Wear Compose 1.4.x is the stable
+    // release line built against the Compose 1.7 generation used above.
+    def wearComposeVersion = "1.4.0"
+    implementation "androidx.wear.compose:compose-foundation:$wearComposeVersion"
+    implementation "androidx.wear.compose:compose-material:$wearComposeVersion"
+    implementation "androidx.wear.compose:compose-navigation:$wearComposeVersion"
+
+    def wearTilesVersion = "1.4.1"
+    implementation "androidx.wear.tiles:tiles:$wearTilesVersion"
+    implementation "androidx.wear.tiles:tiles-material:$wearTilesVersion"
 
     // Navigation dependencies.
     def nav_version = "2.8.5"
@@ -151,7 +158,7 @@ dependencies {
     implementation("com.patrykandpatrick.vico:compose-m3:1.15.0")
 
     // Tailscale dependencies.
-    implementation ':libtailscale@aar'
+    implementation files('libs/libtailscale.aar')
 
     // Integration Tests
     androidTestImplementation composeBom
@@ -185,18 +192,4 @@ def getLocalProperty(key, defaultValue) {
     } catch(Throwable ignored) {
         return defaultValue
     }
-}
-
-
-def getVersionProperty(key) {
-    // tailscale.version is created / updated by the makefile, it is in a loosely
-    // Makfile/envfile format, which is also loosely a properties file format.
-    //      make tailscale.version
-    def versionProps = new Properties()
-    versionProps.load(project.file('../tailscale.version').newDataInputStream())
-    return versionProps.getProperty(key).replaceAll('^\"|\"$', '')
-}
-
-def isTV() {
-    return project.findProperty('PLATFORM')?.toString() == 'tv'
 }

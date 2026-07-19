@@ -161,13 +161,16 @@ open class IpnViewModel : ViewModel() {
   fun login(
       maskedPrefs: Ipn.MaskedPrefs? = null,
       authKey: String? = null,
+      useForegroundService: Boolean = true,
       completionHandler: (Result<Unit>) -> Unit = {}
   ) {
     // Start the IPNService foreground notification so that Android
     // does not freeze the process or cut network access while the user is in the browser
     // completing auth. The foreground service transitions to a full VPN service later when
     // startVPN() is called after the backend reaches Running state.
-    UninitializedApp.get().startForegroundForLogin()
+    if (useForegroundService) {
+      UninitializedApp.get().startForegroundForLogin()
+    }
     val client = Client(viewModelScope)
 
     val finalMaskedPrefs = maskedPrefs?.deepCopy() ?: Ipn.MaskedPrefs()
@@ -212,19 +215,33 @@ open class IpnViewModel : ViewModel() {
     }
   }
 
-  fun loginWithAuthKey(authKey: String, completionHandler: (Result<Unit>) -> Unit = {}) {
+  fun loginWithAuthKey(
+      authKey: String,
+      useForegroundService: Boolean = true,
+      completionHandler: (Result<Unit>) -> Unit = {},
+  ) {
     val prefs = Ipn.MaskedPrefs()
     prefs.WantRunning = true
-    login(prefs, authKey = authKey, completionHandler)
+    login(
+        prefs,
+        authKey = authKey,
+        useForegroundService = useForegroundService,
+        completionHandler = completionHandler,
+    )
   }
 
   fun loginWithCustomControlURL(
       controlURL: String,
-      completionHandler: (Result<Unit>) -> Unit = {}
+      useForegroundService: Boolean = true,
+      completionHandler: (Result<Unit>) -> Unit = {},
   ) {
     val prefs = Ipn.MaskedPrefs()
     prefs.ControlURL = controlURL
-    login(prefs, completionHandler = completionHandler)
+    login(
+        prefs,
+        useForegroundService = useForegroundService,
+        completionHandler = completionHandler,
+    )
   }
 
   fun logout(completionHandler: (Result<String>) -> Unit = {}) {

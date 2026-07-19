@@ -40,6 +40,9 @@ import com.tailscale.ipn.util.HardwareKeyStore
 import com.tailscale.ipn.util.NoSuchKeyException
 import com.tailscale.ipn.util.ShareFileHelper
 import com.tailscale.ipn.util.TSLog
+import com.tailscale.ipn.wear.WearMainActivity
+import com.tailscale.ipn.wear.tile.TailwareTileStateStore
+import com.tailscale.ipn.wear.tile.TailwareTileUpdates
 import java.io.IOException
 import java.lang.UnsupportedOperationException
 import java.net.NetworkInterface
@@ -88,6 +91,15 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
   private val appViewModelStore: ViewModelStore by lazy { ViewModelStore() }
   var healthNotifier: HealthNotifier? = null
 
+  private data class WearNotificationSnapshot(
+      val state: Ipn.State,
+      val hideDisconnectAction: Boolean,
+      val exitNodeName: String?,
+      val selfIp: String?,
+      val vpnActive: Boolean = false,
+      val vpnAuthorized: Boolean = false,
+  )
+
   override fun getPlatformDNSConfig(): String = dns.dnsConfigAsString
 
   override fun getInstallSource(): String = AppSourceChecker.getInstallSource(this)
@@ -109,6 +121,9 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
     super.onCreate()
     appInstance = this
     setUnprotectedInstance(this)
+    // A new process cannot inherit an established TUN from an older process. This also prevents a
+    // cold Tile request after reboot/force-stop from displaying a stale connected state.
+    TailwareTileStateStore.beginProcessSession(this)
     mdmChangeReceiver = MDMSettingsChangedReceiver()
     val filter = IntentFilter(Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED)
     registerReceiver(mdmChangeReceiver, filter)
@@ -178,35 +193,58 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
       MDMSettings.update(get(), restrictionsManager)
     }
     applicationScope.launch {
-      Notifier.state.collect { _ ->
-        combine(Notifier.state, MDMSettings.forceEnabled.flow, Notifier.prefs, Notifier.netmap) {
-                state,
-                forceEnabled,
-                prefs,
-                netmap ->
-              Triple(state, forceEnabled, getExitNodeName(prefs, netmap))
-            }
-            .distinctUntilChanged()
-            .collect { (state, hideDisconnectAction, exitNodeName) ->
-              val ableToStartVPN = state > Ipn.State.NeedsMachineAuth
-              // If VPN is stopped, show a disconnected notification. If it is running as a
-              // foreground
-              // service, IPNService will show a connected notification.
-              if (state == Ipn.State.Stopped) {
-                notifyStatus(vpnRunning = false, hideDisconnectAction = hideDisconnectAction.value)
-              }
-              val vpnRunning = state == Ipn.State.Starting || state == Ipn.State.Running
-              updateConnStatus(ableToStartVPN)
-              QuickToggleService.setVPNRunning(vpnRunning)
-              // Update notification status when VPN is running
-              if (vpnRunning) {
+      combine(Notifier.state, MDMSettings.forceEnabled.flow, Notifier.prefs, Notifier.netmap) {
+              state,
+              forceEnabled,
+              prefs,
+              netmap ->
+            WearNotificationSnapshot(
+                state = state,
+                hideDisconnectAction = forceEnabled.value,
+                exitNodeName = getExitNodeName(prefs, netmap),
+                selfIp = netmap?.SelfNode?.primaryIPv4Address,
+            )
+          }
+          .combine(appViewModel.vpnActive) { snapshot, vpnActive ->
+            snapshot.copy(vpnActive = vpnActive)
+          }
+          .combine(appViewModel.vpnPrepared) { snapshot, vpnPrepared ->
+            snapshot.copy(vpnAuthorized = vpnPrepared)
+          }
+          .distinctUntilChanged()
+          .collect { snapshot ->
+            val ableToStartVPN = snapshot.state > Ipn.State.NeedsMachineAuth
+            if (snapshot.state == Ipn.State.Stopped) {
+              if (optionalWearNotificationsEnabled()) {
                 notifyStatus(
-                    vpnRunning = true,
-                    hideDisconnectAction = hideDisconnectAction.value,
-                    exitNodeName = exitNodeName)
+                    vpnRunning = false,
+                    hideDisconnectAction = snapshot.hideDisconnectAction,
+                )
+              } else {
+                notificationManager.cancel(STATUS_NOTIFICATION_ID)
               }
             }
-      }
+            updateConnStatus(ableToStartVPN)
+            if (TailwareTileStateStore.write(
+                context = this@App,
+                ipnState = snapshot.state,
+                vpnActive = snapshot.vpnActive,
+                vpnAuthorized = snapshot.vpnAuthorized || snapshot.vpnActive,
+                ableToStartVpn = ableToStartVPN,
+                selfIp = snapshot.selfIp,
+            )) {
+              TailwareTileUpdates.request(this@App)
+            }
+            // Only an established Android TUN is connected. IPNService owns the temporary
+            // foreground "Starting" notification while the interface is being established.
+            if (snapshot.vpnActive) {
+              notifyStatus(
+                  vpnRunning = true,
+                  hideDisconnectAction = snapshot.hideDisconnectAction,
+                  exitNodeName = snapshot.exitNodeName,
+              )
+            }
+          }
     }
     TSLog.init(this)
     FeatureFlags.initialize(mapOf("enable_new_search" to true))
@@ -286,8 +324,24 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
    */
   private fun updateConnStatus(ableToStartVPN: Boolean) {
     setAbleToStartVPN(ableToStartVPN)
-    QuickToggleService.updateTile()
     TSLog.d("App", "Set Tile Ready: $ableToStartVPN")
+  }
+
+  private fun optionalWearNotificationsEnabled(): Boolean =
+      getSharedPreferences("tailware_wear_preferences", MODE_PRIVATE)
+          .getBoolean(
+              "optional_notifications",
+              Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU,
+          ) && NotificationManagerCompat.from(this).areNotificationsEnabled()
+
+  fun refreshOptionalWearStatusNotification() {
+    // An active tunnel owns a mandatory foreground notification through IPNService.
+    if (appViewModel.vpnActive.value) return
+    if (optionalWearNotificationsEnabled()) {
+      notifyStatus(vpnRunning = false, hideDisconnectAction = false)
+    } else {
+      notificationManager.cancel(STATUS_NOTIFICATION_ID)
+    }
   }
 
   override fun getDeviceName(): String {
@@ -636,9 +690,16 @@ open class UninitializedApp : Application() {
   fun notifyStatus(
       vpnRunning: Boolean,
       hideDisconnectAction: Boolean,
-      exitNodeName: String? = null
+      exitNodeName: String? = null,
+      vpnStarting: Boolean = false,
   ) {
-    notifyStatus(buildStatusNotification(vpnRunning, hideDisconnectAction, exitNodeName))
+    notifyStatus(
+        buildStatusNotification(
+            vpnRunning,
+            hideDisconnectAction,
+            exitNodeName,
+            vpnStarting,
+        ))
   }
 
   fun notifyStatus(notification: Notification) {
@@ -659,17 +720,25 @@ open class UninitializedApp : Application() {
   fun buildStatusNotification(
       vpnRunning: Boolean,
       hideDisconnectAction: Boolean,
-      exitNodeName: String? = null
+      exitNodeName: String? = null,
+      vpnStarting: Boolean = false,
   ): Notification {
-    val title = getString(if (vpnRunning) R.string.connected else R.string.not_connected)
+    val tunnelActive = vpnRunning || vpnStarting
+    val title =
+        getString(
+            when {
+              vpnRunning -> R.string.connected
+              vpnStarting -> R.string.starting
+              else -> R.string.not_connected
+            })
     val message =
         if (vpnRunning && exitNodeName != null) {
           getString(R.string.using_exit_node, exitNodeName)
         } else null
-    val icon = if (vpnRunning) R.drawable.ic_notification else R.drawable.ic_notification_disabled
+    val icon = if (tunnelActive) R.drawable.ic_notification else R.drawable.ic_notification_disabled
     val action =
-        if (vpnRunning) IPNReceiver.INTENT_DISCONNECT_VPN else IPNReceiver.INTENT_CONNECT_VPN
-    val actionLabel = getString(if (vpnRunning) R.string.disconnect else R.string.connect)
+        if (tunnelActive) IPNReceiver.INTENT_DISCONNECT_VPN else IPNReceiver.INTENT_CONNECT_VPN
+    val actionLabel = getString(if (tunnelActive) R.string.disconnect else R.string.connect)
     val buttonIntent = Intent(this, IPNReceiver::class.java).apply { this.action = action }
     val pendingButtonIntent: PendingIntent =
         PendingIntent.getBroadcast(
@@ -677,10 +746,7 @@ open class UninitializedApp : Application() {
             0,
             buttonIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-    val intent =
-        Intent(this, MainActivity::class.java).apply {
-          flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-        }
+    val intent = Intent(this, WearMainActivity::class.java)
     val pendingIntent: PendingIntent =
         PendingIntent.getActivity(
             this, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -689,13 +755,13 @@ open class UninitializedApp : Application() {
             .setSmallIcon(icon)
             .setContentTitle(title)
             .setContentText(message)
-            .setAutoCancel(!vpnRunning)
-            .setOnlyAlertOnce(!vpnRunning)
-            .setOngoing(false)
+            .setAutoCancel(!tunnelActive)
+            .setOnlyAlertOnce(!tunnelActive)
+            .setOngoing(tunnelActive)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(pendingIntent)
-    if (!vpnRunning || !hideDisconnectAction) {
+    if (!tunnelActive || !hideDisconnectAction) {
       builder.addAction(
           NotificationCompat.Action.Builder(0, actionLabel, pendingButtonIntent).build())
     }

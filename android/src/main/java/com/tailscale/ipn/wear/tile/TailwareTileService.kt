@@ -4,6 +4,7 @@
 package com.tailscale.ipn.wear.tile
 
 import android.content.Context
+import android.util.Log
 import androidx.core.content.edit
 import androidx.wear.tiles.ActionBuilders
 import androidx.wear.tiles.ColorBuilders
@@ -103,6 +104,8 @@ class TailwareTileService : TileService() {
     return TileSnapshot(
         tunnelStatus = tunnelStatus,
         selfIp = cached.selfIp,
+        activeExitNodeName = cached.activeExitNodeName,
+        underlyingOnline = cached.underlyingOnline,
         setupMessage = setupMessage,
         openApp = quickAction == QUICK_ACTION_OPEN_APP,
         language = language,
@@ -115,11 +118,13 @@ class TailwareTileService : TileService() {
       snapshot: TileSnapshot,
   ): LayoutElementBuilders.LayoutElement {
     val deviceParameters = requestParams.deviceParameters ?: fallbackDeviceParameters()
+    val underlyingUnavailable = snapshot.underlyingOnline == false
     val statusColor =
-        when (snapshot.tunnelStatus) {
-          TileTunnelStatus.Connected -> COLOR_CONNECTED
-          TileTunnelStatus.Connecting -> COLOR_CONNECTING
-          TileTunnelStatus.Disconnected -> COLOR_DISCONNECTED
+        when {
+          underlyingUnavailable -> COLOR_CONNECTING
+          snapshot.tunnelStatus == TileTunnelStatus.Connected -> COLOR_CONNECTED
+          snapshot.tunnelStatus == TileTunnelStatus.Connecting -> COLOR_CONNECTING
+          else -> COLOR_DISCONNECTED
         }
     val statusLabel =
         when (snapshot.tunnelStatus) {
@@ -135,6 +140,18 @@ class TailwareTileService : TileService() {
                   "Déconnecté",
                   "Getrennt",
               )
+        }
+    val displayedStatusLabel =
+        if (underlyingUnavailable) {
+          localized(
+              snapshot.language,
+              "No internet",
+              "Geen internet",
+              "Pas d’internet",
+              "Kein Internet",
+          )
+        } else {
+          statusLabel
         }
     val buttonLabel =
         when {
@@ -154,6 +171,8 @@ class TailwareTileService : TileService() {
                 "Prêt à connecter",
                 "Verbindungsbereit",
             )
+    val exitNodeText =
+        snapshot.activeExitNodeName?.takeIf { it.isNotBlank() }?.let { name -> "Exit: $name" }
     val opensApp = snapshot.openApp || snapshot.setupMessage != null
     val targetClass =
         if (opensApp) {
@@ -176,9 +195,9 @@ class TailwareTileService : TileService() {
 
     val statusButton =
         Button.Builder(this, click)
-            .setSize(72f)
+            .setSize(48f)
             .setButtonColors(ButtonColors(statusColor, COLOR_INK))
-            .setTextContent(buttonLabel, Typography.TYPOGRAPHY_TITLE2)
+            .setTextContent(buttonLabel, Typography.TYPOGRAPHY_TITLE3)
             .setContentDescription(
                 if (opensApp)
                     localized(
@@ -204,9 +223,9 @@ class TailwareTileService : TileService() {
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
             .addContent(statusButton)
             .addContent(
-                LayoutElementBuilders.Spacer.Builder().setHeight(DimensionBuilders.dp(6f)).build())
+                LayoutElementBuilders.Spacer.Builder().setHeight(DimensionBuilders.dp(4f)).build())
             .addContent(
-                Text.Builder(this, statusLabel)
+                Text.Builder(this, displayedStatusLabel)
                     .setTypography(Typography.TYPOGRAPHY_TITLE3)
                     .setColor(ColorBuilders.argb(statusColor))
                     .build())
@@ -216,43 +235,17 @@ class TailwareTileService : TileService() {
                     .setColor(ColorBuilders.argb(COLOR_MUTED))
                     .setMaxLines(1)
                     .build())
+            .apply {
+              exitNodeText?.let { exitNode ->
+                addContent(
+                    Text.Builder(this@TailwareTileService, exitNode)
+                        .setTypography(Typography.TYPOGRAPHY_CAPTION2)
+                        .setColor(ColorBuilders.argb(COLOR_MUTED))
+                        .setMaxLines(1)
+                        .build())
+              }
+            }
             .build()
-
-    val actionHint =
-        when {
-          opensApp ->
-              localized(
-                  snapshot.language,
-                  "Open Tailware",
-                  "Open Tailware",
-                  "Ouvrir Tailware",
-                  "Tailware öffnen",
-              )
-          snapshot.tunnelStatus == TileTunnelStatus.Connected ->
-              localized(
-                  snapshot.language,
-                  "Tap to disconnect",
-                  "Tik om te verbreken",
-                  "Touchez pour déconnecter",
-                  "Zum Trennen tippen",
-              )
-          snapshot.tunnelStatus == TileTunnelStatus.Connecting ->
-              localized(
-                  snapshot.language,
-                  "Connection in progress",
-                  "Verbinding wordt gemaakt",
-                  "Connexion en cours",
-                  "Verbindung wird hergestellt",
-              )
-          else ->
-              localized(
-                  snapshot.language,
-                  "Tap to connect",
-                  "Tik om te verbinden",
-                  "Touchez pour connecter",
-                  "Zum Verbinden tippen",
-              )
-        }
 
     return PrimaryLayout.Builder(deviceParameters)
         .setPrimaryLabelTextContent(
@@ -261,17 +254,14 @@ class TailwareTileService : TileService() {
                 .setColor(ColorBuilders.argb(COLOR_BRAND))
                 .build())
         .setContent(content)
-        .setSecondaryLabelTextContent(
-            Text.Builder(this, actionHint)
-                .setTypography(Typography.TYPOGRAPHY_CAPTION2)
-                .setColor(ColorBuilders.argb(COLOR_TEXT))
-                .build())
         .build()
   }
 
   private data class TileSnapshot(
       val tunnelStatus: TileTunnelStatus,
       val selfIp: String?,
+      val activeExitNodeName: String?,
+      val underlyingOnline: Boolean?,
       val setupMessage: String?,
       val openApp: Boolean,
       val language: String,
@@ -312,14 +302,13 @@ class TailwareTileService : TileService() {
   }
 
   companion object {
-    private const val RESOURCES_VERSION = "1"
+    private const val RESOURCES_VERSION = "2"
     // State changes request immediate updates; this is only a battery-friendly reconciliation.
     private const val FRESHNESS_INTERVAL_MILLIS = 15 * 60_000L
     private const val CLICK_ID = "tailware_connection"
     private const val WEAR_MAIN_ACTIVITY = "com.tailscale.ipn.wear.WearMainActivity"
 
     private const val COLOR_INK = 0xFF071419.toInt()
-    private const val COLOR_TEXT = 0xFFDDFCF3.toInt()
     private const val COLOR_MUTED = 0xFF8BA5AC.toInt()
     private const val COLOR_BRAND = 0xFF63F2C2.toInt()
     private const val COLOR_CONNECTED = 0xFF63F2C2.toInt()
@@ -334,6 +323,8 @@ internal data class CachedTileState(
     val vpnAuthorized: Boolean,
     val ableToStartVpn: Boolean,
     val selfIp: String?,
+    val activeExitNodeName: String? = null,
+    val underlyingOnline: Boolean? = null,
 )
 
 /**
@@ -361,12 +352,20 @@ internal object TailwareTileStateStore {
     val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
     val stateName = preferences.getString(KEY_CACHED_IPN_STATE, Ipn.State.NeedsLogin.name)
     val ipnState = Ipn.State.values().firstOrNull { it.name == stateName } ?: Ipn.State.NeedsLogin
+    val underlyingOnline =
+        if (preferences.contains(KEY_CACHED_UNDERLYING_ONLINE)) {
+          preferences.getBoolean(KEY_CACHED_UNDERLYING_ONLINE, false)
+        } else {
+          null
+        }
     return CachedTileState(
         ipnState = ipnState,
         vpnActive = preferences.getBoolean(KEY_CACHED_VPN_ACTIVE, false),
         vpnAuthorized = preferences.getBoolean(KEY_CACHED_VPN_AUTHORIZED, false),
         ableToStartVpn = preferences.getBoolean(KEY_CACHED_ABLE_TO_START, false),
         selfIp = preferences.getString(KEY_CACHED_SELF_IP, null),
+        activeExitNodeName = preferences.getString(KEY_CACHED_ACTIVE_EXIT_NODE, null),
+        underlyingOnline = underlyingOnline,
     )
   }
 
@@ -377,15 +376,26 @@ internal object TailwareTileStateStore {
       vpnAuthorized: Boolean,
       ableToStartVpn: Boolean,
       selfIp: String?,
+      activeExitNodeName: String? = null,
+      underlyingOnline: Boolean? = null,
   ): Boolean {
     val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
     val normalizedIp = selfIp?.takeIf { it.isNotBlank() }
+    val normalizedExitNodeName = activeExitNodeName?.takeIf { it.isNotBlank() }
+    val storedUnderlyingOnline =
+        if (preferences.contains(KEY_CACHED_UNDERLYING_ONLINE)) {
+          preferences.getBoolean(KEY_CACHED_UNDERLYING_ONLINE, false)
+        } else {
+          null
+        }
     val changed =
         preferences.getString(KEY_CACHED_IPN_STATE, null) != ipnState.name ||
             preferences.getBoolean(KEY_CACHED_VPN_ACTIVE, false) != vpnActive ||
             preferences.getBoolean(KEY_CACHED_VPN_AUTHORIZED, false) != vpnAuthorized ||
             preferences.getBoolean(KEY_CACHED_ABLE_TO_START, false) != ableToStartVpn ||
-            preferences.getString(KEY_CACHED_SELF_IP, null) != normalizedIp
+            preferences.getString(KEY_CACHED_SELF_IP, null) != normalizedIp ||
+            preferences.getString(KEY_CACHED_ACTIVE_EXIT_NODE, null) != normalizedExitNodeName ||
+            storedUnderlyingOnline != underlyingOnline
     if (!changed) return false
 
     preferences.edit {
@@ -395,6 +405,10 @@ internal object TailwareTileStateStore {
       putBoolean(KEY_CACHED_ABLE_TO_START, ableToStartVpn)
       if (normalizedIp == null) remove(KEY_CACHED_SELF_IP)
       else putString(KEY_CACHED_SELF_IP, normalizedIp)
+      if (normalizedExitNodeName == null) remove(KEY_CACHED_ACTIVE_EXIT_NODE)
+      else putString(KEY_CACHED_ACTIVE_EXIT_NODE, normalizedExitNodeName)
+      if (underlyingOnline == null) remove(KEY_CACHED_UNDERLYING_ONLINE)
+      else putBoolean(KEY_CACHED_UNDERLYING_ONLINE, underlyingOnline)
     }
     return true
   }
@@ -403,8 +417,14 @@ internal object TailwareTileStateStore {
 /** Requests that every active instance of the Tailware Tile fetch fresh state. */
 object TailwareTileUpdates {
   fun request(context: Context) {
-    TileService.getUpdater(context.applicationContext)
-        .requestUpdate(TailwareTileService::class.java)
+    try {
+      TileService.getUpdater(context.applicationContext)
+          .requestUpdate(TailwareTileService::class.java)
+    } catch (exception: SecurityException) {
+      // A Tile refresh is best-effort. OEM Wear builds must never be able to take down the VPN app
+      // when their System UI update endpoint is unavailable or protected.
+      Log.w("TailwareTileUpdates", "Unable to request a Tile refresh", exception)
+    }
   }
 }
 
@@ -433,6 +453,8 @@ private const val KEY_CACHED_VPN_ACTIVE = "tile_cached_vpn_active"
 private const val KEY_CACHED_VPN_AUTHORIZED = "tile_cached_vpn_authorized"
 private const val KEY_CACHED_ABLE_TO_START = "tile_cached_able_to_start"
 private const val KEY_CACHED_SELF_IP = "tile_cached_self_ip"
+private const val KEY_CACHED_ACTIVE_EXIT_NODE = "tile_cached_active_exit_node"
+private const val KEY_CACHED_UNDERLYING_ONLINE = "tile_cached_underlying_online"
 private const val LANGUAGE_ENGLISH = "English"
 private const val LANGUAGE_DUTCH = "Dutch"
 private const val LANGUAGE_FRENCH = "French"

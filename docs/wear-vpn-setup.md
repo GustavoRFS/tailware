@@ -1,25 +1,24 @@
 # Wear OS VPN authorization
 
 Tailware uses Android's standard `VpnService`. On first connection, the app
-always tries the normal Android consent flow before suggesting ADB.
+needs a one-time ADB authorization on Wear OS.
 
-## Normal setup
+## Why ADB is required
 
-1. Install and open Tailware on the watch.
-2. Sign in.
-3. Tap **Connect**.
-4. If Android shows the VPN warning, approve it.
-5. Return to Tailware and connect again if needed.
+Android's Compatibility Test Suite explicitly reports VPN configuration as
+unsupported on watch devices and excludes watches from its `VpnService`
+compatibility test:
 
-`VpnService.prepare()` returns a system activity when approval is still needed
-and returns `null` once Tailware is authorized. Tailware checks it again after
-the system activity completes instead of assuming that approval succeeded.
+- [`FeatureUtil.isConfigVpnSupported()`](https://android.googlesource.com/platform/cts/+/refs/heads/main/apps/CtsVerifier/src/com/android/cts/verifier/features/FeatureUtil.java)
+- [`VpnTest.supportedHardware()`](https://android.googlesource.com/platform/cts/+/4cb525394d52ecce303c18590d9955e098a22696/hostsidetests/net/app/src/com/android/cts/net/hostside/VpnTest.java)
 
-Wear OS builds differ by manufacturer. Some watches include a usable Android
-VPN confirmation activity; others omit it or cannot display it correctly on the
-watch. ADB is a fallback for those devices, not the default onboarding route.
+`VpnService.prepare()` returns `null` once Tailware is authorized. A non-null
+result is not evidence that Wear OS can display a working confirmation screen:
+it can resolve to a non-interactive system stub. Tailware therefore does not
+launch that intent on a watch. It safely shows the ADB setup until `prepare()`
+returns `null`.
 
-## ADB fallback
+## ADB authorization
 
 Granting this AppOp lets Tailware create an Android VPN interface. Only do this
 for the Tailware build you installed yourself. A VPN app can inspect traffic
@@ -108,10 +107,27 @@ Do not use `pm grant`. VPN consent is an AppOp, not a runtime permission.
 `BIND_VPN_SERVICE` protects the service so only Android can bind to it; it is
 not a permission that should be granted to Tailware.
 
+## Restart behavior
+
+Tailware stores the last explicit connection choice:
+
+- when Tailware was **on**, a normal watch reboot restores the tunnel after
+  `BOOT_COMPLETED`, provided the account and VPN AppOp are still valid;
+- when Tailware was **off**, a reboot leaves it off;
+- signing out or losing VPN authorization clears the saved on-state.
+
+The `ACTIVATE_VPN` AppOp normally survives a reboot, so it does not need to be
+granted again. Android deliberately suppresses boot receivers after a manual
+force-stop until the user opens the app again.
+
 ## Optional always-on mode
 
-Always-on is deliberately separate from basic authorization. First sign in,
-make a normal connection, and verify that Tailware reconnects correctly.
+Always-on is deliberately separate from Tailware's own state-preserving reboot
+recovery. Android's always-on mode can restart the VPN even after the in-app
+switch was deliberately turned off, so do not enable it when exact on/off
+preservation is desired. If that system-enforced behavior is preferred, first
+sign in, make a normal connection, and verify that Tailware reconnects
+correctly.
 
 To store Tailware as the always-on VPN provider:
 

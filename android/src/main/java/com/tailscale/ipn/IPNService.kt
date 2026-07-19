@@ -11,6 +11,7 @@ import com.tailscale.ipn.mdm.MDMSettings
 import com.tailscale.ipn.ui.model.Ipn
 import com.tailscale.ipn.ui.notifier.Notifier
 import com.tailscale.ipn.util.TSLog
+import com.tailscale.ipn.wear.TailwareVpnStateStore
 import com.tailscale.ipn.wear.WearMainActivity
 import com.tailscale.ipn.wear.tile.TailwareTileUpdates
 import java.util.UUID
@@ -40,11 +41,14 @@ open class IPNService : VpnService(), libtailscale.IPNService {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
       when (intent?.action) {
         ACTION_STOP_VPN -> {
+          TailwareVpnStateStore.setDesiredVpnEnabled(this, false)
           app.setWantRunning(false)
           close()
           START_NOT_STICKY
         }
         ACTION_RESTART_VPN -> {
+          // A restart is an implementation detail, not a user-requested disconnect.
+          TailwareVpnStateStore.setDesiredVpnEnabled(this, true)
           app.setWantRunning(false) {
             close()
             app.startVPN()
@@ -59,6 +63,7 @@ open class IPNService : VpnService(), libtailscale.IPNService {
           START_NOT_STICKY
         }
         ACTION_START_VPN -> {
+          TailwareVpnStateStore.setDesiredVpnEnabled(this, true)
           showForegroundNotification()
           app.setWantRunning(true)
           Libtailscale.requestVPN(this)
@@ -66,21 +71,32 @@ open class IPNService : VpnService(), libtailscale.IPNService {
         }
         "android.net.VpnService" -> {
           // This means we were started by Android due to Always On VPN.
-          // A system-started VpnService must still promote itself immediately.
-          showForegroundNotification()
-          app.setWantRunning(true)
-          Libtailscale.requestVPN(this)
-          START_STICKY
+          // Android's setting is not allowed to overwrite an explicit Tailware OFF choice.
+          if (TailwareVpnStateStore.desiredVpnEnabled(this) &&
+              UninitializedApp.get().isAbleToStartVPN()) {
+            // A system-started VpnService must still promote itself immediately.
+            showForegroundNotification()
+            app.setWantRunning(true)
+            Libtailscale.requestVPN(this)
+            START_STICKY
+          } else {
+            app.setWantRunning(false)
+            stopSelf(startId)
+            START_NOT_STICKY
+          }
         }
         else -> {
           // This means that we were restarted after the service was killed
           // (potentially due to OOM).
-          if (UninitializedApp.get().isAbleToStartVPN()) {
+          if (TailwareVpnStateStore.desiredVpnEnabled(this) &&
+              UninitializedApp.get().isAbleToStartVPN()) {
             showForegroundNotification()
-            App.get()
+            app.setWantRunning(true)
             Libtailscale.requestVPN(this)
             START_STICKY
           } else {
+            app.setWantRunning(false)
+            stopSelf(startId)
             START_NOT_STICKY
           }
         }
@@ -107,6 +123,7 @@ open class IPNService : VpnService(), libtailscale.IPNService {
   override fun onRevoke() {
     // VPN permission was granted to another app, so tell the Go backend and then set prepared to be
     // false so that when user attempts to connect again, VpnService.prepare() is called
+    TailwareVpnStateStore.setDesiredVpnEnabled(this, false)
     app.setWantRunning(false)
     setVpnPrepared(false)
     close()

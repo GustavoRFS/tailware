@@ -18,10 +18,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text as Material3Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,10 +55,16 @@ import com.tailscale.ipn.wear.TailwareViewModel
 import com.tailscale.ipn.wear.TileQuickAction
 import com.tailscale.ipn.wear.VpnAuthorization
 import com.tailscale.ipn.wear.WearAccountState
+import com.tailscale.ipn.wear.WearHealthSeverity
 import com.tailscale.ipn.wear.WearPeer
 import com.tailscale.ipn.wear.WearTunnelStatus
 import com.tailscale.ipn.wear.WearUiState
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 private object Route {
   const val Gate = "gate"
@@ -66,10 +74,10 @@ private object Route {
   const val AuthKey = "auth_key"
   const val ControlUrl = "control_url"
   const val Dashboard = "dashboard"
-  const val Menu = "menu"
   const val Devices = "devices"
   const val Device = "device"
   const val ExitNodes = "exit_nodes"
+  const val Health = "health"
   const val Settings = "settings"
   const val Language = "language"
   const val Tile = "tile"
@@ -80,9 +88,9 @@ private object Route {
 @Composable
 fun TailwareApp(
     viewModel: TailwareViewModel,
-    onRequestVpnConsent: () -> Unit,
     onSetOptionalNotifications: (Boolean) -> Unit,
     onOpenVpnSettings: () -> Unit,
+    onOpenLoginOnPhone: (String) -> Unit,
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
   val navController = rememberSwipeDismissableNavController()
@@ -102,12 +110,15 @@ fun TailwareApp(
   }
 
   val currentRoute = backStackEntry?.destination?.route
-  LaunchedEffect(state.accountState, currentRoute) {
+  LaunchedEffect(state.accountState, state.loginUrl, currentRoute) {
     val route = currentRoute ?: return@LaunchedEffect
     val destination =
         when {
           state.accountState == WearAccountState.SignedIn && route in onboardingRoutes ->
               Route.Dashboard
+          state.accountState != WearAccountState.SignedIn &&
+              state.loginUrl != null &&
+              route != Route.LoginQr -> Route.LoginQr
           state.accountState == WearAccountState.SignedOut &&
               (route == Route.Gate || route !in onboardingRoutes) -> Route.Welcome
           state.accountState == WearAccountState.NeedsMachineAuthorization &&
@@ -148,9 +159,26 @@ fun TailwareApp(
       )
     }
     composable(Route.LoginQr) {
+      val latestAccountState by rememberUpdatedState(state.accountState)
+      val explicitCancellationRequested = remember { mutableStateOf(false) }
+      DisposableEffect(Unit) {
+        onDispose {
+          if (!explicitCancellationRequested.value &&
+              latestAccountState != WearAccountState.SignedIn &&
+              latestAccountState != WearAccountState.NeedsMachineAuthorization) {
+            viewModel.cancelInteractiveLogin()
+          }
+        }
+      }
       LoginQrScreen(
           state = state,
           onRetry = viewModel::startInteractiveLogin,
+          onOpenOnPhone = onOpenLoginOnPhone,
+          onCancel = {
+            explicitCancellationRequested.value = true
+            viewModel.cancelInteractiveLogin()
+            navController.popBackStack()
+          },
           onDismissError = viewModel::clearError,
       )
     }
@@ -183,28 +211,16 @@ fun TailwareApp(
               WearTunnelStatus.Unknown ->
                   when (state.vpnAuthorization) {
                     VpnAuthorization.Granted -> viewModel.connect()
-                    VpnAuthorization.SystemConsentAvailable -> onRequestVpnConsent()
                     VpnAuthorization.AdbRequired -> navController.navigate(Route.VpnSetup)
                   }
-            }
-          },
-          onExitNodes = { navController.navigate(Route.ExitNodes) },
-          onMenu = { navController.navigate(Route.Menu) },
-          onVpnSetup = { navController.navigate(Route.VpnSetup) },
-          onDismissError = viewModel::clearError,
-      )
-    }
-    composable(Route.Menu) {
-      MainMenuScreen(
-          state = state,
-          onDashboard = {
-            if (!navController.popBackStack(Route.Dashboard, inclusive = false)) {
-              navController.navigate(Route.Dashboard) { launchSingleTop = true }
             }
           },
           onDevices = { navController.navigate(Route.Devices) },
           onExitNodes = { navController.navigate(Route.ExitNodes) },
           onSettings = { navController.navigate(Route.Settings) },
+          onHealth = { navController.navigate(Route.Health) },
+          onVpnSetup = { navController.navigate(Route.VpnSetup) },
+          onDismissError = viewModel::clearError,
       )
     }
     composable(Route.Devices) {
@@ -236,6 +252,7 @@ fun TailwareApp(
           onDismissError = viewModel::clearError,
       )
     }
+    composable(Route.Health) { HealthScreen(state = state) }
     composable(Route.Settings) {
       SettingsScreen(
           state = state,
@@ -257,7 +274,6 @@ fun TailwareApp(
     composable(Route.VpnSetup) {
       VpnSetupScreen(
           state = state,
-          onShowConsent = onRequestVpnConsent,
           onRetry = { viewModel.refreshVpnAuthorization(com.tailscale.ipn.App.get()) },
           onOpenVpnSettings = onOpenVpnSettings,
           onDismissError = viewModel::clearError,
@@ -278,7 +294,7 @@ private fun GateScreen() {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
       Image(
-          painter = painterResource(R.drawable.tailware_logo),
+          painter = painterResource(R.drawable.tailware_mark),
           contentDescription = "Tailware",
           modifier = Modifier.size(72.dp),
       )
@@ -295,7 +311,7 @@ private fun WelcomeScreen(state: WearUiState, onConnectAccount: () -> Unit) {
   TailwareListScreen(title = "TAILWARE") {
     item {
       Image(
-          painter = painterResource(R.drawable.tailware_logo),
+          painter = painterResource(R.drawable.tailware_mark),
           contentDescription = "Tailware",
           modifier =
               Modifier.size(if (LocalConfiguration.current.screenWidthDp < 210) 64.dp else 78.dp),
@@ -373,6 +389,7 @@ private fun LoginMethodsScreen(
                   ),
               onClick = onTailscaleLogin,
               accent = true,
+              enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
           )
         }
         item {
@@ -387,6 +404,7 @@ private fun LoginMethodsScreen(
                       "Control-Server-URL eingeben",
                   ),
               onClick = onControlUrl,
+              enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
           )
         }
         item {
@@ -408,6 +426,7 @@ private fun LoginMethodsScreen(
                       "Für die erweiterte Einrichtung",
                   ),
               onClick = onAuthKey,
+              enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
           )
         }
       }
@@ -417,6 +436,8 @@ private fun LoginMethodsScreen(
 private fun LoginQrScreen(
     state: WearUiState,
     onRetry: () -> Unit,
+    onOpenOnPhone: (String) -> Unit,
+    onCancel: () -> Unit,
     onDismissError: () -> Unit,
 ) {
   val qr = rememberQrCode(state.loginUrl)
@@ -488,6 +509,37 @@ private fun LoginQrScreen(
           }
         }
         item {
+          TailwareChip(
+              label =
+                  tr(
+                      state,
+                      "Continue on phone",
+                      "Doorgaan op telefoon",
+                      "Continuer sur le téléphone",
+                      "Auf dem Smartphone fortfahren",
+                  ),
+              secondary =
+                  if (state.phoneLoginSent)
+                      tr(
+                          state,
+                          "Sign-in page sent to the paired phone",
+                          "Aanmeldpagina naar de gekoppelde telefoon gestuurd",
+                          "Page de connexion envoyée au téléphone associé",
+                          "Anmeldeseite an das gekoppelte Smartphone gesendet",
+                      )
+                  else
+                      tr(
+                          state,
+                          "Open this secure sign-in link remotely",
+                          "Open deze beveiligde link op afstand",
+                          "Ouvrir ce lien sécurisé à distance",
+                          "Sicheren Link aus der Ferne öffnen",
+                      ),
+              onClick = { state.loginUrl?.let(onOpenOnPhone) },
+              accent = true,
+          )
+        }
+        item {
           Text(
               text =
                   tr(
@@ -500,6 +552,27 @@ private fun LoginQrScreen(
               color = TailwarePalette.Muted,
               textAlign = TextAlign.Center,
               maxLines = 3,
+          )
+        }
+        item {
+          TailwareChip(
+              label =
+                  tr(
+                      state,
+                      "Generate new code",
+                      "Nieuwe code maken",
+                      "Générer un nouveau code",
+                      "Neuen Code erzeugen",
+                  ),
+              secondary =
+                  tr(
+                      state,
+                      "The previous link will no longer be shown",
+                      "De vorige link wordt niet meer getoond",
+                      "L’ancien lien ne sera plus affiché",
+                      "Der vorige Link wird nicht mehr angezeigt",
+                  ),
+              onClick = onRetry,
           )
         }
       }
@@ -528,8 +601,24 @@ private fun LoginQrScreen(
           TailwareChip(
               label = tr(state, "Try again", "Opnieuw proberen", "Réessayer", "Erneut versuchen"),
               onClick = onRetry,
+              enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
           )
         }
+      }
+    }
+    if (state.accountState != WearAccountState.NeedsMachineAuthorization) {
+      item {
+        TailwareChip(
+            label =
+                tr(
+                    state,
+                    "Cancel sign-in",
+                    "Aanmelden annuleren",
+                    "Annuler la connexion",
+                    "Anmeldung abbrechen",
+                ),
+            onClick = onCancel,
+        )
       }
     }
   }
@@ -624,8 +713,10 @@ private fun ControlUrlScreen(
 private fun DashboardScreen(
     state: WearUiState,
     onConnectionClick: () -> Unit,
+    onDevices: () -> Unit,
     onExitNodes: () -> Unit,
-    onMenu: () -> Unit,
+    onSettings: () -> Unit,
+    onHealth: () -> Unit,
     onVpnSetup: () -> Unit,
     onDismissError: () -> Unit,
 ) {
@@ -680,6 +771,25 @@ private fun DashboardScreen(
           textAlign = TextAlign.Center,
       )
     }
+    state.healthWarnings.firstOrNull()?.let { warning ->
+      item {
+        TailwareChip(
+            label = warning.title,
+            secondary =
+                tr(
+                    state,
+                    "Tap for details",
+                    "Tik voor details",
+                    "Touchez pour les détails",
+                    "Für Details tippen",
+                ),
+            onClick = onHealth,
+            iconRes = R.drawable.warning_rounded,
+            warning = warning.severity != WearHealthSeverity.High,
+            danger = warning.severity == WearHealthSeverity.High,
+        )
+      }
+    }
     if (state.vpnAuthorization != VpnAuthorization.Granted) {
       item {
         TailwareChip(
@@ -691,10 +801,7 @@ private fun DashboardScreen(
                     "Configuration VPN requise",
                     "VPN-Einrichtung nötig",
                 ),
-            secondary =
-                if (state.vpnAuthorization == VpnAuthorization.AdbRequired)
-                    "One-time ADB authorization"
-                else "Android confirmation",
+            secondary = "One-time ADB authorization",
             onClick = onVpnSetup,
         )
       }
@@ -720,70 +827,6 @@ private fun DashboardScreen(
       if (self.dnsName.isNotBlank()) {
         item { TailwareInfo(label = "MAGICDNS", value = self.dnsName, mono = true) }
       }
-    }
-    item {
-      TailwareChip(
-          label =
-              tr(
-                  state,
-                  "Exit node",
-                  "Exit node",
-                  "Nœud de sortie",
-                  "Exit-Node",
-              ),
-          secondary =
-              state.activeExitNodeName
-                  ?: state.selectedExitNodeName
-                  ?: tr(state, "None", "Geen", "Aucun", "Keiner"),
-          onClick = onExitNodes,
-      )
-    }
-    item {
-      TailwareChip(
-          label = tr(state, "Menu", "Menu", "Menu", "Menü"),
-          secondary =
-              tr(
-                  state,
-                  "Devices and settings",
-                  "Apparaten en instellingen",
-                  "Appareils et paramètres",
-                  "Geräte und Einstellungen",
-              ),
-          onClick = onMenu,
-          accent = true,
-      )
-    }
-  }
-}
-
-@Composable
-private fun MainMenuScreen(
-    state: WearUiState,
-    onDashboard: () -> Unit,
-    onDevices: () -> Unit,
-    onExitNodes: () -> Unit,
-    onSettings: () -> Unit,
-) {
-  TailwareListScreen(title = tr(state, "Menu", "Menu", "Menu", "Menü")) {
-    item {
-      TailwareChip(
-          label =
-              tr(
-                  state,
-                  "Connection",
-                  "Verbinding",
-                  "Connexion",
-                  "Verbindung",
-              ),
-          secondary =
-              when (state.tunnelStatus) {
-                WearTunnelStatus.Connected ->
-                    tr(state, "Connected", "Verbonden", "Connecté", "Verbunden")
-                else -> tr(state, "Disconnected", "Niet verbonden", "Déconnecté", "Getrennt")
-              },
-          onClick = onDashboard,
-          accent = state.tunnelStatus == WearTunnelStatus.Connected,
-      )
     }
     item {
       TailwareChip(
@@ -833,15 +876,56 @@ private fun MainMenuScreen(
           secondary =
               tr(
                   state,
-                  "DNS, language, notifications and Tile",
-                  "DNS, taal, meldingen en tegel",
-                  "DNS, langue, notifications et Tile",
-                  "DNS, Sprache, Benachrichtigungen und Tile",
+                  "Language, DNS, account and Tile",
+                  "Taal, DNS, account en tegel",
+                  "Langue, DNS, compte et Tile",
+                  "Sprache, DNS, Konto und Tile",
               ),
           onClick = onSettings,
+          iconRes = R.drawable.ic_tailware_settings,
       )
     }
   }
+}
+
+@Composable
+private fun HealthScreen(state: WearUiState) {
+  TailwareListScreen(
+      title =
+          tr(
+              state,
+              "Connection health",
+              "Verbindingsstatus",
+              "État de la connexion",
+              "Verbindungsstatus",
+          )) {
+        if (state.healthWarnings.isEmpty()) {
+          item {
+            TailwareInfo(
+                label = tr(state, "Status", "Status", "État", "Status"),
+                value =
+                    tr(
+                        state,
+                        "No problems detected",
+                        "Geen problemen gevonden",
+                        "Aucun problème détecté",
+                        "Keine Probleme erkannt",
+                    ),
+                valueColor = TailwarePalette.Signal,
+            )
+          }
+        } else {
+          items(state.healthWarnings, key = { it.code }) { warning ->
+            TailwareInfo(
+                label = warning.title,
+                value = warning.message,
+                valueColor =
+                    if (warning.severity == WearHealthSeverity.High) TailwarePalette.Danger
+                    else TailwarePalette.Warning,
+            )
+          }
+        }
+      }
 }
 
 @Composable
@@ -1016,18 +1100,29 @@ private fun ExitNodesScreen(
         errorItem(state, onDismissError)
         item {
           TailwareChip(
-              label = tr(state, "No exit node", "Geen exit node", "Aucun nœud", "Keine Exit-Node"),
-              secondary =
-                  if (state.selectedExitNodeId == null) "✓"
+              label =
+                  if (state.activeExitNodeId == null)
+                      tr(state, "No exit node", "Geen exit node", "Aucun nœud", "Keine Exit-Node")
                   else
                       tr(
                           state,
-                          "Use the local internet connection",
-                          "Gebruik de lokale internetverbinding",
-                          "Utiliser la connexion locale",
-                          "Lokale Internetverbindung verwenden"),
+                          "Disable active exit node",
+                          "Actieve exit node uitschakelen",
+                          "Désactiver le nœud actif",
+                          "Aktive Exit-Node deaktivieren",
+                      ),
+              secondary =
+                  if (state.activeExitNodeId == null) "✓"
+                  else
+                      state.activeExitNodeName
+                          ?: tr(
+                              state,
+                              "Use the local internet connection",
+                              "Gebruik de lokale internetverbinding",
+                              "Utiliser la connexion locale",
+                              "Lokale Internetverbindung verwenden"),
               onClick = onClear,
-              accent = state.selectedExitNodeId == null,
+              accent = state.activeExitNodeId == null,
           )
         }
         items(state.exitNodes, key = { it.stableId }) { node ->
@@ -1041,14 +1136,14 @@ private fun ExitNodesScreen(
                     if (node.active) append(" · ${tr(state, "Active", "Actief", "Actif", "Aktiv")}")
                     else if (node.selected)
                         append(
-                            " · ${tr(state, "Selected", "Geselecteerd", "Sélectionné", "Ausgewählt")}")
+                            " · ${tr(state, "Last used", "Laatst gebruikt", "Dernier utilisé", "Zuletzt verwendet")}")
                   },
               onClick = { onSelect(node.stableId) },
               enabled = node.online,
-              accent = node.active || node.selected,
+              accent = node.active,
           )
         }
-        if (state.selectedExitNodeId != null) {
+        if (state.activeExitNodeId != null) {
           item {
             TailwareToggle(
                 label =
@@ -1088,7 +1183,13 @@ private fun SettingsScreen(
     onLogout: () -> Unit,
     onDismissError: () -> Unit,
 ) {
-  var confirmLogout by rememberSaveable { mutableStateOf(false) }
+  var confirmLogout by remember { mutableStateOf(false) }
+  LaunchedEffect(confirmLogout) {
+    if (confirmLogout) {
+      delay(10_000)
+      confirmLogout = false
+    }
+  }
   TailwareListScreen(
       title =
           tr(
@@ -1099,6 +1200,14 @@ private fun SettingsScreen(
               "Einstellungen",
           )) {
         errorItem(state, onDismissError)
+        item {
+          TailwareChip(
+              label = tr(state, "Language", "Taal", "Langue", "Sprache"),
+              secondary = languageName(state.language),
+              onClick = onLanguage,
+              iconRes = R.drawable.globe,
+          )
+        }
         state.profileDisplayName?.let {
           item {
             TailwareInfo(
@@ -1107,12 +1216,32 @@ private fun SettingsScreen(
             )
           }
         }
+        state.selfNode?.let { self ->
+          item {
+            TailwareInfo(
+                label =
+                    tr(
+                        state,
+                        "Device key",
+                        "Toestelsleutel",
+                        "Clé de l’appareil",
+                        "Geräteschlüssel",
+                    ),
+                value = formatKeyExpiry(state, self.keyExpiry),
+                valueColor =
+                    if (keyIsExpired(self.keyExpiry)) TailwarePalette.Danger
+                    else TailwarePalette.Ice,
+            )
+          }
+        }
         item {
           TailwareToggle(
               label = "Tailscale DNS",
               secondary = "MagicDNS",
-              checked = state.tailscaleDnsEnabled,
+              checked =
+                  state.accountState == WearAccountState.SignedIn && state.tailscaleDnsEnabled,
               onCheckedChange = { onToggleDns() },
+              enabled = state.accountState == WearAccountState.SignedIn && state.busyAction == null,
           )
         }
         item {
@@ -1135,13 +1264,6 @@ private fun SettingsScreen(
                   ),
               checked = state.optionalNotificationsEnabled,
               onCheckedChange = onSetNotifications,
-          )
-        }
-        item {
-          TailwareChip(
-              label = tr(state, "Language", "Taal", "Langue", "Sprache"),
-              secondary = languageName(state.language),
-              onClick = onLanguage,
           )
         }
         item {
@@ -1173,13 +1295,6 @@ private fun SettingsScreen(
                   when (state.vpnAuthorization) {
                     VpnAuthorization.Granted ->
                         tr(state, "Authorized", "Toegestaan", "Autorisé", "Autorisiert")
-                    VpnAuthorization.SystemConsentAvailable ->
-                        tr(
-                            state,
-                            "Android confirmation needed",
-                            "Android-bevestiging nodig",
-                            "Confirmation Android requise",
-                            "Android-Bestätigung nötig")
                     VpnAuthorization.AdbRequired -> "ADB setup"
                   },
               onClick = onVpnSetup,
@@ -1227,15 +1342,26 @@ private fun SettingsScreen(
                   else tr(state, "Sign out", "Afmelden", "Se déconnecter", "Abmelden"),
               secondary =
                   if (confirmLogout)
-                      tr(
-                          state,
-                          "Tap once more to remove this account from the watch",
-                          "Tik nogmaals om dit account van het horloge te verwijderen",
-                          "Touchez encore pour supprimer ce compte de la montre",
-                          "Noch einmal tippen, um dieses Konto von der Uhr zu entfernen",
-                      )
+                      if (state.underlyingNetworkStatus !=
+                          com.tailscale.ipn.UnderlyingNetworkStatus.Online)
+                          tr(
+                              state,
+                              "Reconnect to the internet before the final tap",
+                              "Herstel internet vóór de laatste tik",
+                              "Rétablissez internet avant la dernière pression",
+                              "Vor dem letzten Tippen Internet wiederherstellen",
+                          )
+                      else
+                          tr(
+                              state,
+                              "Tap once more to sign out on this watch",
+                              "Tik nogmaals om je op dit horloge af te melden",
+                              "Touchez encore pour vous déconnecter de cette montre",
+                              "Noch einmal tippen, um sich auf dieser Uhr abzumelden",
+                          )
                   else state.profileDisplayName,
               onClick = { if (confirmLogout) onLogout() else confirmLogout = true },
+              enabled = state.accountState == WearAccountState.SignedIn && state.busyAction == null,
               accent = confirmLogout,
           )
         }
@@ -1255,7 +1381,7 @@ private fun AboutScreen(state: WearUiState) {
       title = tr(state, "About Tailware", "Over Tailware", "À propos", "Über Tailware")) {
         item {
           Image(
-              painter = painterResource(R.drawable.tailware_logo),
+              painter = painterResource(R.drawable.tailware_mark),
               contentDescription = "Tailware",
               modifier = Modifier.size(64.dp),
           )
@@ -1388,7 +1514,6 @@ private fun TileSettingsScreen(state: WearUiState, onSelect: (TileQuickAction) -
 @Composable
 private fun VpnSetupScreen(
     state: WearUiState,
-    onShowConsent: () -> Unit,
     onRetry: () -> Unit,
     onOpenVpnSettings: () -> Unit,
     onDismissError: () -> Unit,
@@ -1427,36 +1552,6 @@ private fun VpnSetupScreen(
               )
             }
           }
-          VpnAuthorization.SystemConsentAvailable -> {
-            item {
-              TailwareInfo(
-                  label = "ANDROID",
-                  value =
-                      tr(
-                          state,
-                          "This watch reports that its VPN confirmation dialog is available.",
-                          "Dit horloge meldt dat de VPN-bevestiging beschikbaar is.",
-                          "Cette montre indique que la confirmation VPN est disponible.",
-                          "Diese Uhr meldet, dass die VPN-Bestätigung verfügbar ist.",
-                      ),
-                  valueColor = TailwarePalette.Warning,
-              )
-            }
-            item {
-              TailwareChip(
-                  label =
-                      tr(
-                          state,
-                          "Show Android confirmation",
-                          "Toon Android-bevestiging",
-                          "Afficher la confirmation",
-                          "Android-Bestätigung zeigen",
-                      ),
-                  onClick = onShowConsent,
-                  accent = true,
-              )
-            }
-          }
           VpnAuthorization.AdbRequired -> {
             item {
               TailwareInfo(
@@ -1464,10 +1559,10 @@ private fun VpnSetupScreen(
                   value =
                       tr(
                           state,
-                          "This watch cannot open the Android VPN dialog. Use the one-time ADB setup below.",
-                          "Dit horloge kan de Android VPN-dialoog niet openen. Gebruik eenmalig ADB.",
-                          "Cette montre ne peut pas ouvrir le dialogue VPN. Utilisez ADB une fois.",
-                          "Diese Uhr kann den VPN-Dialog nicht öffnen. Einmalig ADB verwenden.",
+                          "Wear OS does not provide a supported VPN confirmation screen. Authorize Tailware once through ADB.",
+                          "Wear OS biedt geen ondersteund VPN-bevestigingsscherm. Autoriseer Tailware eenmalig via ADB.",
+                          "Wear OS ne fournit pas d'écran de confirmation VPN pris en charge. Autorisez Tailware une fois via ADB.",
+                          "Wear OS bietet keinen unterstützten VPN-Bestätigungsdialog. Tailware einmal per ADB autorisieren.",
                       ),
                   valueColor = TailwarePalette.Warning,
               )
@@ -1611,6 +1706,38 @@ private fun languageName(language: TailwareLanguage): String =
       TailwareLanguage.French -> "Français"
       TailwareLanguage.German -> "Deutsch"
     }
+
+private fun formatKeyExpiry(state: WearUiState, rawExpiry: String?): String {
+  val expiry = parseKeyExpiry(rawExpiry)
+  if (expiry == null) {
+    return tr(
+        state,
+        "Does not expire",
+        "Verloopt niet",
+        "N’expire pas",
+        "Läuft nicht ab",
+    )
+  }
+  val locale = Locale.forLanguageTag(state.language.languageTag)
+  val date =
+      DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
+          .withLocale(locale)
+          .format(expiry.atZone(ZoneId.systemDefault()))
+  return if (expiry.isBefore(Instant.now())) {
+    tr(state, "Expired on $date", "Verlopen op $date", "Expirée le $date", "Abgelaufen am $date")
+  } else {
+    tr(state, "Expires on $date", "Verloopt op $date", "Expire le $date", "Läuft ab am $date")
+  }
+}
+
+private fun keyIsExpired(rawExpiry: String?): Boolean =
+    parseKeyExpiry(rawExpiry)?.isBefore(Instant.now()) == true
+
+private fun parseKeyExpiry(rawExpiry: String?): Instant? {
+  if (rawExpiry.isNullOrBlank() || rawExpiry == "0001-01-01T00:00:00Z") return null
+  return runCatching { Instant.from(DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(rawExpiry)) }
+      .getOrNull()
+}
 
 private fun tr(
     state: WearUiState,

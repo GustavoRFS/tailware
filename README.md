@@ -1,7 +1,7 @@
 # Tailware
 
 <p align="center">
-  <img src="branding/tailware-logo.png" alt="Tailware logo" width="180">
+  <img src="branding/tailware-mark.svg" alt="Tailware network T logo" width="180">
 </p>
 
 Tailware is an independent, open-source Tailscale client designed for Wear OS.
@@ -17,8 +17,8 @@ It is not affiliated with or endorsed by Tailscale Inc.
 
 ## First-version scope
 
-- Guided first-run sign-in with browser/QR, auth key, or a custom
-  Headscale/control-server URL
+- Guided first-run sign-in with a fresh QR code, one-tap continuation on the
+  paired phone, auth key, or a custom Headscale/control-server URL
 - A watch-first dashboard with one large connect/disconnect control
 - Own device name, Tailscale IP addresses, MagicDNS name, tailnet, and tunnel
   status
@@ -30,8 +30,10 @@ It is not affiliated with or endorsed by Tailscale Inc.
 - In-app Tailware version, source attribution, and full BSD 3-Clause notice
 - Wear OS Tile for status plus either a quick connection toggle or an
   open-app action, backed by a battery-friendly cached status
-- VPN setup guidance, Android's normal consent flow, and a documented safe ADB
-  fallback for watches that cannot display the system VPN dialog
+- Connection-health details for missing internet, DNS, DERP, and exit-node
+  problems without misreporting the local VPN interface as disconnected
+- Reboot recovery that preserves the user's last explicit on/off choice
+- Safe one-time ADB authorization guidance for Wear OS VPN setup
 - Optional always-on VPN setup with lockdown deliberately disabled
 - Layouts made for round screens and smaller Wear OS displays
 
@@ -49,10 +51,12 @@ the first public release.
 
 ## VPN authorization on Wear OS
 
-Tailware first calls Android's standard `VpnService.prepare()` flow. Some Wear
-OS builds do not expose a usable VPN-consent screen. For those watches, use the
-repository's guarded PowerShell helper after installing the APK and connecting
-the watch through wireless debugging:
+Android's Compatibility Test Suite treats VPN configuration as unsupported on
+watch devices and excludes watches from its `VpnService` compatibility test.
+Tailware therefore uses `VpnService.prepare()` only to check whether it is
+already authorized. When it is not, use the repository's guarded PowerShell
+helper after installing the APK and connecting the watch through wireless
+debugging:
 
 ```powershell
 .\tools\authorize-wear-vpn.ps1
@@ -60,6 +64,11 @@ the watch through wireless debugging:
 
 The required authorization is the `ACTIVATE_VPN` AppOp. It is **not** a runtime
 permission and cannot be granted with `pm grant`.
+
+See the official AOSP checks in
+[`FeatureUtil.isConfigVpnSupported()`](https://android.googlesource.com/platform/cts/+/refs/heads/main/apps/CtsVerifier/src/com/android/cts/verifier/features/FeatureUtil.java)
+and
+[`VpnTest.supportedHardware()`](https://android.googlesource.com/platform/cts/+/4cb525394d52ecce303c18590d9955e098a22696/hostsidetests/net/app/src/com/android/cts/net/hostside/VpnTest.java).
 
 Read [docs/wear-vpn-setup.md](docs/wear-vpn-setup.md) for pairing, device
 selection, verification, optional always-on setup, revocation, and

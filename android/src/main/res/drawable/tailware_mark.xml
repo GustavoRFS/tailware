@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimal Tailware network-T mark, centered for launcher, splash and Tile surfaces. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="400"
+    android:viewportHeight="400">
+    <group
+        android:pivotX="200"
+        android:pivotY="164"
+        android:scaleX="1.25"
+        android:scaleY="1.25"
+        android:translateY="36">
+        <path
+            android:fillColor="#0D2026"
+            android:pathData="M200,69A95,95 0,1 0,200 259A95,95 0,1 0,200 69Z" />
+        <path
+            android:fillColor="#63F2C2"
+            android:fillType="evenOdd"
+            android:pathData="M200,62A102,102 0,1 0,200 266A102,102 0,1 0,200 62ZM200,75A89,89 0,1 1,200 253A89,89 0,1 1,200 75Z" />
+        <path
+            android:fillColor="#63F2C2"
+            android:pathData="M139,137H261V151H207V222H193V151H139Z" />
+        <path
+            android:fillColor="#0D2026"
+            android:pathData="M139,128A16,16 0,1 0,139 160A16,16 0,1 0,139 128ZM200,128A16,16 0,1 0,200 160A16,16 0,1 0,200 128ZM261,128A16,16 0,1 0,261 160A16,16 0,1 0,261 128ZM200,210A16,16 0,1 0,200 242A16,16 0,1 0,200 210Z" />
+        <path
+            android:fillColor="#63F2C2"
+            android:fillType="evenOdd"
+            android:pathData="M139,124A20,20 0,1 0,139 164A20,20 0,1 0,139 124ZM139,133A11,11 0,1 1,139 155A11,11 0,1 1,139 133ZM200,124A20,20 0,1 0,200 164A20,20 0,1 0,200 124ZM200,133A11,11 0,1 1,200 155A11,11 0,1 1,200 133ZM261,124A20,20 0,1 0,261 164A20,20 0,1 0,261 124ZM261,133A11,11 0,1 1,261 155A11,11 0,1 1,261 133ZM200,206A20,20 0,1 0,200 246A20,20 0,1 0,200 206ZM200,215A11,11 0,1 1,200 237A11,11 0,1 1,200 215Z" />
+    </group>
+</vector>

@@ -37,8 +37,8 @@ android {
         targetSdkVersion 36
         // Tailware has its own app-version line; the native Tailscale engine keeps
         // its upstream version metadata through tailscale.version.
-        versionCode 10001
-        versionName "0.1.0-private.1"
+        versionCode 10003
+        versionName "0.1.0-private.3"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
         // This setting, which defaults to 'true', will cause Tailscale to fall
@@ -137,12 +137,16 @@ dependencies {
 
     // Wear OS UI and Tile dependencies. Wear Compose 1.4.x is the stable
     // release line built against the Compose 1.7 generation used above.
-    def wearComposeVersion = "1.4.0"
+    // 1.4.1 guards the reduce-motion system setting on OEM builds that restrict access.
+    def wearComposeVersion = "1.4.1"
     implementation "androidx.wear.compose:compose-foundation:$wearComposeVersion"
     implementation "androidx.wear.compose:compose-material:$wearComposeVersion"
     implementation "androidx.wear.compose:compose-navigation:$wearComposeVersion"
+    implementation "androidx.wear:wear-remote-interactions:1.2.0"
 
-    def wearTilesVersion = "1.4.1"
+    // 1.5.0 fixes requestUpdate() crashing on API 34 when the app targets SDK > 34,
+    // while remaining compatible with this project's Kotlin 1.9 toolchain.
+    def wearTilesVersion = "1.5.0"
     implementation "androidx.wear.tiles:tiles:$wearTilesVersion"
     implementation "androidx.wear.tiles:tiles-material:$wearTilesVersion"
 

@@ -22,12 +22,12 @@ enum class VpnAuthorization {
   /** VpnService.prepare returned null: Tailware is currently authorized. */
   Granted,
 
-  /** Android exposes an activity capable of handling the VpnService.prepare intent. */
-  SystemConsentAvailable,
-
-  /** No system activity can handle the consent intent; this watch needs the ADB bootstrap flow. */
+  /** Wear OS needs the one-time ADB bootstrap before VpnService.prepare returns null. */
   AdbRequired,
 }
+
+internal fun vpnAuthorizationFromPrepared(vpnPrepared: Boolean): VpnAuthorization =
+    if (vpnPrepared) VpnAuthorization.Granted else VpnAuthorization.AdbRequired
 
 /** User-facing tunnel state, derived from both the IPN state and the established TUN state. */
 enum class WearTunnelStatus {
@@ -85,6 +85,7 @@ data class WearSelfNode(
     val ipv6: String?,
     val addresses: List<String>,
     val tailnetName: String,
+    val keyExpiry: String?,
 )
 
 data class WearPeer(
@@ -113,6 +114,20 @@ data class WearExitNode(
     val city: String?,
 )
 
+enum class WearHealthSeverity {
+  Low,
+  Medium,
+  High,
+}
+
+data class WearHealthWarning(
+    val code: String,
+    val severity: WearHealthSeverity,
+    val title: String,
+    val message: String,
+    val impactsConnectivity: Boolean,
+)
+
 enum class PingStatus {
   Idle,
   Running,
@@ -138,7 +153,7 @@ data class WearUiState(
     val accountState: WearAccountState = WearAccountState.Loading,
     val ipnState: Ipn.State = Ipn.State.NoState,
     val tunnelStatus: WearTunnelStatus = WearTunnelStatus.Unknown,
-    val vpnAuthorization: VpnAuthorization = VpnAuthorization.SystemConsentAvailable,
+    val vpnAuthorization: VpnAuthorization = VpnAuthorization.AdbRequired,
     val profileId: String? = null,
     val profileDisplayName: String? = null,
     val tailnetName: String? = null,
@@ -151,11 +166,15 @@ data class WearUiState(
     val activeExitNodeName: String? = null,
     val allowLanAccess: Boolean = false,
     val tailscaleDnsEnabled: Boolean = false,
+    val underlyingNetworkStatus: com.tailscale.ipn.UnderlyingNetworkStatus =
+        com.tailscale.ipn.UnderlyingNetworkStatus.Unknown,
+    val healthWarnings: List<WearHealthWarning> = emptyList(),
     val language: TailwareLanguage = TailwareLanguage.English,
     val optionalNotificationsEnabled: Boolean = true,
     val tileQuickAction: TileQuickAction = TileQuickAction.ToggleConnection,
     val loginUrl: String? = null,
     val loginCode: String? = null,
+    val phoneLoginSent: Boolean = false,
     val busyAction: WearAction? = null,
     val error: WearError? = null,
     val pingResult: WearPingResult = WearPingResult(),

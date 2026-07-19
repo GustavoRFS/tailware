@@ -11,7 +11,27 @@ import android.util.Log
 import com.tailscale.ipn.util.TSLog
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import libtailscale.Libtailscale
+
+enum class UnderlyingNetworkStatus {
+  Unknown,
+  Online,
+  Limited,
+  Offline,
+}
+
+internal fun classifyUnderlyingNetwork(
+    hasCandidateNetwork: Boolean,
+    hasValidatedInternet: Boolean,
+): UnderlyingNetworkStatus =
+    when {
+      hasValidatedInternet -> UnderlyingNetworkStatus.Online
+      hasCandidateNetwork -> UnderlyingNetworkStatus.Limited
+      else -> UnderlyingNetworkStatus.Offline
+    }
 
 object NetworkChangeCallback {
 
@@ -23,6 +43,10 @@ object NetworkChangeCallback {
 
   // All currently active non-VPN networks we know about.
   private val activeNetworks = mutableMapOf<Network, NetworkInfo>()
+
+  private val _underlyingNetworkStatus = MutableStateFlow(UnderlyingNetworkStatus.Unknown)
+  val underlyingNetworkStatus: StateFlow<UnderlyingNetworkStatus> =
+      _underlyingNetworkStatus.asStateFlow()
 
   // Cached chosen default network for outbound sockets.
   @Volatile
@@ -40,6 +64,7 @@ object NetworkChangeCallback {
   // monitorDnsChanges sets up a network callback to monitor changes to the
   // system's network state and update the DNS configuration when interfaces
   // become available or properties of those interfaces change.
+  @Suppress("DEPRECATION")
   fun monitorDnsChanges(connectivityManager: ConnectivityManager, dns: DnsConfig) {
     val networkConnectivityRequest =
         NetworkRequest.Builder()
@@ -102,6 +127,24 @@ object NetworkChangeCallback {
             }
           }
         })
+
+    // Register first so any transition racing with this initial snapshot is delivered afterward.
+    lock.withLock {
+      activeNetworks.clear()
+      connectivityManager.allNetworks.forEach { network ->
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@forEach
+        if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+            !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) {
+          return@forEach
+        }
+        activeNetworks[network] =
+            NetworkInfo(
+                capabilities,
+                connectivityManager.getLinkProperties(network) ?: LinkProperties(),
+            )
+      }
+      recomputeDefaultNetworkLocked("initial")
+    }
   }
 
   // pickNonMetered returns the first non-metered network in the list of
@@ -164,6 +207,14 @@ object NetworkChangeCallback {
     val info = if (newNetwork != null) activeNetworks[newNetwork] else null
     cachedDefaultNetworkInfo = info
     cachedDefaultInterfaceName = info?.linkProps?.interfaceName
+    _underlyingNetworkStatus.value =
+        classifyUnderlyingNetwork(
+            hasCandidateNetwork = activeNetworks.isNotEmpty(),
+            hasValidatedInternet =
+                activeNetworks.values.any {
+                  it.caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                },
+        )
 
     TSLog.d(
         TAG, "$why: cachedDefaultNetwork=$newNetwork iface=${cachedDefaultInterfaceName ?: "none"}")

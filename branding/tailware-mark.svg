@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-labelledby="title">
+  <title id="title">Tailware network T</title>
+  <g transform="translate(200 200) scale(1.25) translate(-200 -164)">
+    <path fill="#0D2026" d="M200 69a95 95 0 1 0 0 190 95 95 0 1 0 0-190Z"/>
+    <path fill="#63F2C2" fill-rule="evenodd"
+      d="M200 62a102 102 0 1 0 0 204 102 102 0 1 0 0-204Zm0 13a89 89 0 1 1 0 178 89 89 0 1 1 0-178Z"/>
+    <path fill="#63F2C2" d="M139 137h122v14h-54v71h-14v-71h-54Z"/>
+    <path fill="#0D2026"
+      d="M139 128a16 16 0 1 0 0 32 16 16 0 1 0 0-32Zm61 0a16 16 0 1 0 0 32 16 16 0 1 0 0-32Zm61 0a16 16 0 1 0 0 32 16 16 0 1 0 0-32Zm-61 82a16 16 0 1 0 0 32 16 16 0 1 0 0-32Z"/>
+    <path fill="#63F2C2" fill-rule="evenodd"
+      d="M139 124a20 20 0 1 0 0 40 20 20 0 1 0 0-40Zm0 9a11 11 0 1 1 0 22 11 11 0 1 1 0-22Zm61-9a20 20 0 1 0 0 40 20 20 0 1 0 0-40Zm0 9a11 11 0 1 1 0 22 11 11 0 1 1 0-22Zm61-9a20 20 0 1 0 0 40 20 20 0 1 0 0-40Zm0 9a11 11 0 1 1 0 22 11 11 0 1 1 0-22Zm-61 73a20 20 0 1 0 0 40 20 20 0 1 0 0-40Zm0 9a11 11 0 1 1 0 22 11 11 0 1 1 0-22Z"/>
+  </g>
+</svg>

@@ -40,6 +40,7 @@ import com.tailscale.ipn.util.HardwareKeyStore
 import com.tailscale.ipn.util.NoSuchKeyException
 import com.tailscale.ipn.util.ShareFileHelper
 import com.tailscale.ipn.util.TSLog
+import com.tailscale.ipn.wear.TailwareVpnStateStore
 import com.tailscale.ipn.wear.WearMainActivity
 import com.tailscale.ipn.wear.tile.TailwareTileStateStore
 import com.tailscale.ipn.wear.tile.TailwareTileUpdates
@@ -98,6 +99,7 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
       val selfIp: String?,
       val vpnActive: Boolean = false,
       val vpnAuthorized: Boolean = false,
+      val underlyingOnline: Boolean? = null,
   )
 
   override fun getPlatformDNSConfig(): String = dns.dnsConfigAsString
@@ -211,6 +213,16 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
           .combine(appViewModel.vpnPrepared) { snapshot, vpnPrepared ->
             snapshot.copy(vpnAuthorized = vpnPrepared)
           }
+          .combine(NetworkChangeCallback.underlyingNetworkStatus) { snapshot, networkStatus ->
+            snapshot.copy(
+                underlyingOnline =
+                    when (networkStatus) {
+                      UnderlyingNetworkStatus.Online -> true
+                      UnderlyingNetworkStatus.Offline -> false
+                      UnderlyingNetworkStatus.Limited,
+                      UnderlyingNetworkStatus.Unknown -> null
+                    })
+          }
           .distinctUntilChanged()
           .collect { snapshot ->
             val ableToStartVPN = snapshot.state > Ipn.State.NeedsMachineAuth
@@ -232,6 +244,8 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
                 vpnAuthorized = snapshot.vpnAuthorized || snapshot.vpnActive,
                 ableToStartVpn = ableToStartVPN,
                 selfIp = snapshot.selfIp,
+                activeExitNodeName = snapshot.exitNodeName,
+                underlyingOnline = snapshot.underlyingOnline,
             )) {
               TailwareTileUpdates.request(this@App)
             }
@@ -633,6 +647,9 @@ open class UninitializedApp : Application() {
   }
 
   fun startVPN() {
+    // Persist the user's intent before dispatching the service command. This closes the small
+    // window where an immediate reboot could otherwise restore the previous OFF state.
+    TailwareVpnStateStore.setDesiredVpnEnabled(this, true)
     val intent = Intent(this, IPNService::class.java).apply { action = IPNService.ACTION_START_VPN }
     // FLAG_UPDATE_CURRENT ensures that if the intent is already pending, the existing intent will
     // be updated rather than creating multiple redundant instances.
@@ -658,6 +675,8 @@ open class UninitializedApp : Application() {
   }
 
   fun stopVPN() {
+    // Persist synchronously before dispatch so OFF survives even an immediate reboot.
+    TailwareVpnStateStore.setDesiredVpnEnabled(this, false)
     val intent = Intent(this, IPNService::class.java).apply { action = IPNService.ACTION_STOP_VPN }
     try {
       startService(intent)

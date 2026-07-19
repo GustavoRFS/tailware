@@ -4,8 +4,6 @@
 package com.tailscale.ipn.wear
 
 import android.Manifest
-import android.app.Activity
-import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -16,17 +14,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.wear.remote.interactions.RemoteActivityHelper
+import com.tailscale.ipn.App
 import com.tailscale.ipn.wear.ui.TailwareApp
 import com.tailscale.ipn.wear.ui.TailwareTheme
 
 class WearMainActivity : ComponentActivity() {
   private val viewModel: TailwareViewModel by viewModels()
-
-  private val vpnConsentLauncher =
-      registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        viewModel.onVpnConsentResult(result.resultCode == Activity.RESULT_OK, this)
-      }
+  private val remoteExecutor by lazy { ContextCompat.getMainExecutor(this) }
+  private val remoteActivityHelper by lazy { RemoteActivityHelper(this, remoteExecutor) }
 
   private val notificationPermissionLauncher =
       registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -36,13 +34,16 @@ class WearMainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     installSplashScreen()
     super.onCreate(savedInstanceState)
+    // IpnViewModel starts LocalAPI requests from its base-class initializer. Initialize the
+    // native application before the lazy Wear view model is first accessed by Compose.
+    App.get()
     setContent {
       TailwareTheme {
         TailwareApp(
             viewModel = viewModel,
-            onRequestVpnConsent = ::requestVpnConsent,
             onSetOptionalNotifications = ::setOptionalNotifications,
             onOpenVpnSettings = ::openVpnSettings,
+            onOpenLoginOnPhone = ::openLoginOnPhone,
         )
       }
     }
@@ -52,27 +53,6 @@ class WearMainActivity : ComponentActivity() {
     super.onResume()
     viewModel.refreshVpnAuthorization(this)
     viewModel.syncOptionalNotificationPermission()
-  }
-
-  private fun requestVpnConsent() {
-    val intent = viewModel.vpnConsentIntent(this)
-    if (intent == null) {
-      viewModel.refreshVpnAuthorization(this)
-      if (viewModel.uiState.value.vpnAuthorization == VpnAuthorization.Granted) {
-        viewModel.connect()
-      } else {
-        viewModel.onVpnConsentLaunchFailed()
-      }
-      return
-    }
-
-    try {
-      vpnConsentLauncher.launch(intent)
-    } catch (error: ActivityNotFoundException) {
-      viewModel.onVpnConsentLaunchFailed(error.message)
-    } catch (error: SecurityException) {
-      viewModel.onVpnConsentLaunchFailed(error.message)
-    }
   }
 
   private fun setOptionalNotifications(enabled: Boolean) {
@@ -103,5 +83,31 @@ class WearMainActivity : ComponentActivity() {
     if (!opened) {
       viewModel.onVpnSettingsLaunchFailed()
     }
+  }
+
+  private fun openLoginOnPhone(url: String) {
+    val future =
+        runCatching {
+              val intent =
+                  Intent(Intent.ACTION_VIEW, url.toUri()).apply {
+                    addCategory(Intent.CATEGORY_BROWSABLE)
+                  }
+              remoteActivityHelper.startRemoteActivity(intent, null)
+            }
+            .getOrElse {
+              viewModel.onPhoneLoginLaunchFailed(url, it)
+              return
+            }
+    runCatching {
+          future.addListener(
+              {
+                runCatching { future.get() }
+                    .onSuccess { viewModel.onPhoneLoginOpened(url) }
+                    .onFailure { viewModel.onPhoneLoginLaunchFailed(url, it) }
+              },
+              remoteExecutor,
+          )
+        }
+        .onFailure { viewModel.onPhoneLoginLaunchFailed(url, it) }
   }
 }

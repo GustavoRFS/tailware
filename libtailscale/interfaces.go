@@ -129,6 +129,11 @@ type ParcelFileDescriptor interface {
 // Application encapsulates the running Tailscale Application. There is only a
 // single instance of Application per Android application.
 type Application interface {
+	// CancelInteractiveLogin disconnects the current control client and clears
+	// any pending interactive AuthURL without changing profiles, keys, or
+	// persisted login preferences.
+	CancelInteractiveLogin()
+
 	// CallLocalAPI provides a mechanism for calling Tailscale's HTTP localapi
 	// without having to call over the network.
 	CallLocalAPI(timeoutMillis int, method, endpoint string, body InputStream) (LocalAPIResponse, error)

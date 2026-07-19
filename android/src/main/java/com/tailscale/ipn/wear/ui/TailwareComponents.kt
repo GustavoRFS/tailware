@@ -4,6 +4,7 @@
 package com.tailscale.ipn.wear.ui
 
 import android.graphics.Color as AndroidColor
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -45,6 +46,7 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyListScope
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.Chip
 import androidx.wear.compose.material.ChipDefaults
+import androidx.wear.compose.material.Icon
 import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.PositionIndicator
 import androidx.wear.compose.material.Scaffold
@@ -108,6 +110,9 @@ fun TailwareChip(
     secondary: String? = null,
     enabled: Boolean = true,
     accent: Boolean = false,
+    @DrawableRes iconRes: Int? = null,
+    warning: Boolean = false,
+    danger: Boolean = false,
 ) {
   Chip(
       modifier = modifier.fillMaxWidth(),
@@ -132,18 +137,41 @@ fun TailwareChip(
               )
             }
           },
+      icon =
+          iconRes?.let { resource ->
+            {
+              Icon(
+                  painter = androidx.compose.ui.res.painterResource(resource),
+                  contentDescription = null,
+                  modifier = Modifier.size(22.dp),
+              )
+            }
+          },
       colors =
-          if (accent) {
-            ChipDefaults.primaryChipColors(
-                backgroundColor = TailwarePalette.Signal,
-                contentColor = TailwarePalette.Ink,
-            )
-          } else {
-            ChipDefaults.secondaryChipColors(
-                backgroundColor = TailwarePalette.Deep,
-                contentColor = TailwarePalette.Ice,
-                secondaryContentColor = TailwarePalette.Muted,
-            )
+          when {
+            danger ->
+                ChipDefaults.secondaryChipColors(
+                    backgroundColor = TailwarePalette.Danger.copy(alpha = 0.22f),
+                    contentColor = TailwarePalette.Ice,
+                    secondaryContentColor = TailwarePalette.Danger,
+                )
+            warning ->
+                ChipDefaults.secondaryChipColors(
+                    backgroundColor = TailwarePalette.Warning.copy(alpha = 0.20f),
+                    contentColor = TailwarePalette.Ice,
+                    secondaryContentColor = TailwarePalette.Warning,
+                )
+            accent ->
+                ChipDefaults.primaryChipColors(
+                    backgroundColor = TailwarePalette.Signal,
+                    contentColor = TailwarePalette.Ink,
+                )
+            else ->
+                ChipDefaults.secondaryChipColors(
+                    backgroundColor = TailwarePalette.Deep,
+                    contentColor = TailwarePalette.Ice,
+                    secondaryContentColor = TailwarePalette.Muted,
+                )
           },
   )
 }
@@ -165,7 +193,7 @@ fun TailwareToggle(
       label = { Text(label, maxLines = 3) },
       secondaryLabel =
           secondary?.let { value -> { Text(value, maxLines = 4, color = TailwarePalette.Muted) } },
-      toggleControl = { Switch(checked = checked) },
+      toggleControl = { Switch(checked = checked, enabled = enabled) },
   )
 }
 

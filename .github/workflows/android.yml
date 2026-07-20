@@ -37,7 +37,7 @@ jobs:
         run: make go-test
 
       - name: Build APKs
-        run: make tailscale-debug.apk
+        run: make tailware-debug.apk
 
       - name: Run tests
         run: make test

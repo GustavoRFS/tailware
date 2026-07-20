@@ -61,6 +61,31 @@ enum class TileQuickAction {
   }
 }
 
+enum class LoginMethod {
+  Tailscale,
+  AuthenticationKey,
+  CustomServer,
+}
+
+enum class LoginPresentation {
+  Phone,
+  QrCode,
+}
+
+enum class PhoneLoginStatus {
+  Idle,
+  Opening,
+  Sent,
+  Failed,
+}
+
+enum class WearErrorOrigin {
+  Global,
+  InteractiveLogin,
+  AuthenticationKey,
+  CustomServer,
+}
+
 enum class WearAction {
   Connect,
   Disconnect,
@@ -75,6 +100,7 @@ enum class WearAction {
 data class WearError(
     val operation: WearAction?,
     val message: String,
+    val origin: WearErrorOrigin = WearErrorOrigin.Global,
 )
 
 data class WearSelfNode(
@@ -153,6 +179,7 @@ data class WearUiState(
     val accountState: WearAccountState = WearAccountState.Loading,
     val ipnState: Ipn.State = Ipn.State.NoState,
     val tunnelStatus: WearTunnelStatus = WearTunnelStatus.Unknown,
+    val desiredVpnEnabled: Boolean = false,
     val vpnAuthorization: VpnAuthorization = VpnAuthorization.AdbRequired,
     val profileId: String? = null,
     val profileDisplayName: String? = null,
@@ -171,10 +198,17 @@ data class WearUiState(
     val healthWarnings: List<WearHealthWarning> = emptyList(),
     val language: TailwareLanguage = TailwareLanguage.English,
     val optionalNotificationsEnabled: Boolean = true,
+    val optionalNotificationsBlockedBySystem: Boolean = false,
     val tileQuickAction: TileQuickAction = TileQuickAction.ToggleConnection,
+    val tileShowIp: Boolean = true,
+    val tileShowExitNode: Boolean = true,
+    val tileShowMagicDns: Boolean = true,
+    val activeLoginMethod: LoginMethod? = null,
+    val loginPresentation: LoginPresentation = LoginPresentation.QrCode,
     val loginUrl: String? = null,
     val loginCode: String? = null,
-    val phoneLoginSent: Boolean = false,
+    val phoneLoginStatus: PhoneLoginStatus = PhoneLoginStatus.Idle,
+    val phoneLoginError: String? = null,
     val busyAction: WearAction? = null,
     val error: WearError? = null,
     val pingResult: WearPingResult = WearPingResult(),

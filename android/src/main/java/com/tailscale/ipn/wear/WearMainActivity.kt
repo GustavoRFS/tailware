@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,10 +15,18 @@ import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.lifecycleScope
 import androidx.wear.remote.interactions.RemoteActivityHelper
 import com.tailscale.ipn.App
 import com.tailscale.ipn.wear.ui.TailwareApp
 import com.tailscale.ipn.wear.ui.TailwareTheme
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class WearMainActivity : ComponentActivity() {
   private val viewModel: TailwareViewModel by viewModels()
@@ -27,8 +34,8 @@ class WearMainActivity : ComponentActivity() {
   private val remoteActivityHelper by lazy { RemoteActivityHelper(this, remoteExecutor) }
 
   private val notificationPermissionLauncher =
-      registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        viewModel.setOptionalNotificationsEnabled(granted)
+      registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        viewModel.onOptionalNotificationPermissionFinished()
       }
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,7 +49,6 @@ class WearMainActivity : ComponentActivity() {
         TailwareApp(
             viewModel = viewModel,
             onSetOptionalNotifications = ::setOptionalNotifications,
-            onOpenVpnSettings = ::openVpnSettings,
             onOpenLoginOnPhone = ::openLoginOnPhone,
         )
       }
@@ -70,44 +76,41 @@ class WearMainActivity : ComponentActivity() {
     }
   }
 
-  private fun openVpnSettings() {
-    val opened =
-        sequenceOf(
-                Intent(Settings.ACTION_VPN_SETTINGS),
-                Intent(Settings.ACTION_SETTINGS),
-            )
-            .any { intent ->
-              intent.resolveActivity(packageManager) != null &&
-                  runCatching { startActivity(intent) }.isSuccess
-            }
-    if (!opened) {
-      viewModel.onVpnSettingsLaunchFailed()
+  private fun openLoginOnPhone(url: String) {
+    viewModel.onPhoneLoginOpening(url)
+    lifecycleScope.launch {
+      val result = runCatching {
+        when (remoteActivityHelper.availabilityStatus.first()) {
+          RemoteActivityHelper.STATUS_UNAVAILABLE ->
+              error("No compatible paired phone is available.")
+          RemoteActivityHelper.STATUS_TEMPORARILY_UNAVAILABLE ->
+              error("The paired phone is temporarily unreachable. Keep it nearby and unlocked.")
+          // Older watches can report UNKNOWN even when the operation succeeds. The official
+          // API recommends attempting the launch and handling its result in that case.
+          RemoteActivityHelper.STATUS_AVAILABLE,
+          RemoteActivityHelper.STATUS_UNKNOWN -> Unit
+        }
+        val intent =
+            Intent(Intent.ACTION_VIEW, url.toUri()).apply { addCategory(Intent.CATEGORY_BROWSABLE) }
+        val future = remoteActivityHelper.startRemoteActivity(intent, null)
+        withContext(Dispatchers.IO) {
+          try {
+            future.get(PHONE_OPEN_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+          } catch (error: ExecutionException) {
+            throw (error.cause ?: error)
+          } catch (_: TimeoutException) {
+            future.cancel(true)
+            error("The paired phone did not answer in time.")
+          }
+        }
+      }
+      result
+          .onSuccess { viewModel.onPhoneLoginOpened(url) }
+          .onFailure { viewModel.onPhoneLoginLaunchFailed(url, it) }
     }
   }
 
-  private fun openLoginOnPhone(url: String) {
-    val future =
-        runCatching {
-              val intent =
-                  Intent(Intent.ACTION_VIEW, url.toUri()).apply {
-                    addCategory(Intent.CATEGORY_BROWSABLE)
-                  }
-              remoteActivityHelper.startRemoteActivity(intent, null)
-            }
-            .getOrElse {
-              viewModel.onPhoneLoginLaunchFailed(url, it)
-              return
-            }
-    runCatching {
-          future.addListener(
-              {
-                runCatching { future.get() }
-                    .onSuccess { viewModel.onPhoneLoginOpened(url) }
-                    .onFailure { viewModel.onPhoneLoginLaunchFailed(url, it) }
-              },
-              remoteExecutor,
-          )
-        }
-        .onFailure { viewModel.onPhoneLoginLaunchFailed(url, it) }
+  companion object {
+    private const val PHONE_OPEN_TIMEOUT_SECONDS = 15L
   }
 }

@@ -37,8 +37,8 @@ android {
         targetSdkVersion 36
         // Tailware has its own app-version line; the native Tailscale engine keeps
         // its upstream version metadata through tailscale.version.
-        versionCode 10003
-        versionName "0.1.0-private.3"
+        versionCode 10004
+        versionName "0.1.0-private.4"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
         // This setting, which defaults to 'true', will cause Tailscale to fall

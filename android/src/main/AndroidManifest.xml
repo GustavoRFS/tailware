@@ -104,14 +104,6 @@
                 android:name="androidx.wear.tiles.PREVIEW"
                 android:resource="@drawable/tailware_tile_preview" />
         </service>
-        <activity
-            android:name=".wear.tile.TileActionActivity"
-            android:excludeFromRecents="true"
-            android:exported="true"
-            android:noHistory="true"
-            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER"
-            android:theme="@android:style/Theme.NoDisplay" />
-
         <meta-data
             android:name="com.google.android.wearable.standalone"
             android:value="true" />

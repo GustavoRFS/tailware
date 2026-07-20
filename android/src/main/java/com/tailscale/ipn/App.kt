@@ -40,6 +40,7 @@ import com.tailscale.ipn.util.HardwareKeyStore
 import com.tailscale.ipn.util.NoSuchKeyException
 import com.tailscale.ipn.util.ShareFileHelper
 import com.tailscale.ipn.util.TSLog
+import com.tailscale.ipn.wear.DesiredVpnState
 import com.tailscale.ipn.wear.TailwareVpnStateStore
 import com.tailscale.ipn.wear.WearMainActivity
 import com.tailscale.ipn.wear.tile.TailwareTileStateStore
@@ -61,6 +62,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import libtailscale.Libtailscale
+
+data class VpnCommandDispatchResult(
+    val command: DesiredVpnState,
+    val dispatched: Boolean,
+)
 
 class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
   val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -97,6 +103,7 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
       val hideDisconnectAction: Boolean,
       val exitNodeName: String?,
       val selfIp: String?,
+      val tailscaleDnsEnabled: Boolean,
       val vpnActive: Boolean = false,
       val vpnAuthorized: Boolean = false,
       val underlyingOnline: Boolean? = null,
@@ -205,6 +212,7 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
                 hideDisconnectAction = forceEnabled.value,
                 exitNodeName = getExitNodeName(prefs, netmap),
                 selfIp = netmap?.SelfNode?.primaryIPv4Address,
+                tailscaleDnsEnabled = prefs?.CorpDNS == true,
             )
           }
           .combine(appViewModel.vpnActive) { snapshot, vpnActive ->
@@ -246,6 +254,7 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
                 selfIp = snapshot.selfIp,
                 activeExitNodeName = snapshot.exitNodeName,
                 underlyingOnline = snapshot.underlyingOnline,
+                tailscaleDnsEnabled = snapshot.tailscaleDnsEnabled,
             )) {
               TailwareTileUpdates.request(this@App)
             }
@@ -281,10 +290,24 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
             .get(AppViewModel::class.java)
   }
 
-  fun setWantRunning(wantRunning: Boolean, onSuccess: (() -> Unit)? = null) {
+  fun setWantRunning(
+      wantRunning: Boolean,
+      reconcileDesiredState: Boolean = true,
+      onSuccess: (() -> Unit)? = null,
+  ) {
     val callback: (Result<Ipn.Prefs>) -> Unit = { result ->
       result.fold(
-          onSuccess = { onSuccess?.invoke() },
+          onSuccess = {
+            val desired = TailwareVpnStateStore.desiredVpnEnabled(this)
+            if (reconcileDesiredState && desired != wantRunning) {
+              // A newer user command won while this asynchronous LocalAPI PATCH was in flight.
+              // Reassert the newest value so an old STOP can never undo a later START (or vice
+              // versa).
+              setWantRunning(desired, reconcileDesiredState = true, onSuccess = onSuccess)
+            } else {
+              onSuccess?.invoke()
+            }
+          },
           onFailure = { error ->
             TSLog.d("TAG", "Set want running: failed to update preferences: ${error.message}")
           })
@@ -646,50 +669,85 @@ open class UninitializedApp : Application() {
     }
   }
 
-  fun startVPN() {
+  fun startVPN(): Boolean = startVPNCommand().dispatched
+
+  fun startVPNCommand(): VpnCommandDispatchResult {
     // Persist the user's intent before dispatching the service command. This closes the small
     // window where an immediate reboot could otherwise restore the previous OFF state.
-    TailwareVpnStateStore.setDesiredVpnEnabled(this, true)
-    val intent = Intent(this, IPNService::class.java).apply { action = IPNService.ACTION_START_VPN }
-    // FLAG_UPDATE_CURRENT ensures that if the intent is already pending, the existing intent will
-    // be updated rather than creating multiple redundant instances.
-    val pendingIntent =
-        PendingIntent.getForegroundService(
-            this,
-            0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or
-                PendingIntent.FLAG_IMMUTABLE // FLAG_IMMUTABLE for Android 12+
-            )
-    try {
-      pendingIntent.send()
+    val command = TailwareVpnStateStore.requestVpnEnabled(this, true)
+    return VpnCommandDispatchResult(command, dispatchVpnStart(command))
+  }
+
+  /**
+   * Restores an already persisted ON state without creating a newer user command.
+   *
+   * The service validates [command]'s generation again when it receives the intent, so a newer OFF
+   * always wins even if it arrives immediately after this check.
+   */
+  fun restoreVPN(command: DesiredVpnState): Boolean {
+    if (!command.enabled || TailwareVpnStateStore.desiredVpnState(this) != command) return true
+    return dispatchVpnStart(command)
+  }
+
+  private fun dispatchVpnStart(command: DesiredVpnState): Boolean {
+    val intent =
+        Intent(this, IPNService::class.java).apply {
+          action = IPNService.ACTION_START_VPN
+          putExtra(IPNService.EXTRA_COMMAND_GENERATION, command.generation)
+        }
+    return try {
+      startForegroundService(intent)
+      true
     } catch (foregroundServiceStartException: IllegalStateException) {
       TSLog.e(
           TAG,
           "startVPN hit ForegroundServiceStartNotAllowedException: $foregroundServiceStartException")
+      false
     } catch (securityException: SecurityException) {
       TSLog.e(TAG, "startVPN hit SecurityException: $securityException")
+      false
     } catch (e: Exception) {
       TSLog.e(TAG, "startVPN hit exception: $e")
+      false
     }
   }
 
-  fun stopVPN() {
+  fun stopVPN(): Boolean = stopVPNCommand().dispatched
+
+  fun stopVPNCommand(): VpnCommandDispatchResult {
     // Persist synchronously before dispatch so OFF survives even an immediate reboot.
-    TailwareVpnStateStore.setDesiredVpnEnabled(this, false)
-    val intent = Intent(this, IPNService::class.java).apply { action = IPNService.ACTION_STOP_VPN }
-    try {
-      startService(intent)
-    } catch (illegalStateException: IllegalStateException) {
-      TSLog.e(TAG, "stopVPN hit IllegalStateException in startService(): $illegalStateException")
-    } catch (e: Exception) {
-      TSLog.e(TAG, "stopVPN hit exception in startService(): $e")
-    }
+    val command = TailwareVpnStateStore.requestVpnEnabled(this, false)
+    val intent =
+        Intent(this, IPNService::class.java).apply {
+          action = IPNService.ACTION_STOP_VPN
+          putExtra(IPNService.EXTRA_COMMAND_GENERATION, command.generation)
+        }
+    val dispatched =
+        try {
+          startService(intent)
+          true
+        } catch (illegalStateException: IllegalStateException) {
+          TSLog.e(
+              TAG, "stopVPN hit IllegalStateException in startService(): $illegalStateException")
+          false
+        } catch (e: Exception) {
+          TSLog.e(TAG, "stopVPN hit exception in startService(): $e")
+          false
+        }
+    return VpnCommandDispatchResult(command, dispatched)
   }
 
   fun restartVPN() {
+    // A technical restart must never turn an explicitly disabled tunnel back on.
+    val command = TailwareVpnStateStore.desiredVpnState(this)
+    if (!com.tailscale.ipn.wear.shouldDispatchVpnRestart(command.enabled)) {
+      return
+    }
     val intent =
-        Intent(this, IPNService::class.java).apply { action = IPNService.ACTION_RESTART_VPN }
+        Intent(this, IPNService::class.java).apply {
+          action = IPNService.ACTION_RESTART_VPN
+          putExtra(IPNService.EXTRA_COMMAND_GENERATION, command.generation)
+        }
     try {
       startService(intent)
     } catch (illegalStateException: IllegalStateException) {

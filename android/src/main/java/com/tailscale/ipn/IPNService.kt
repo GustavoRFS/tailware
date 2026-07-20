@@ -38,69 +38,110 @@ open class IPNService : VpnService(), libtailscale.IPNService {
     app = App.get()
   }
 
-  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
-      when (intent?.action) {
-        ACTION_STOP_VPN -> {
-          TailwareVpnStateStore.setDesiredVpnEnabled(this, false)
-          app.setWantRunning(false)
+  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    return when (intent?.action) {
+      ACTION_STOP_VPN -> {
+        if (!acceptCommand(intent, requestedEnabled = false)) {
+          return reconcileCurrentDesiredState(startId)
+        }
+        app.setWantRunning(false)
+        close()
+        START_NOT_STICKY
+      }
+      ACTION_RESTART_VPN -> {
+        if (!acceptCommand(intent, requestedEnabled = true)) {
+          return reconcileCurrentDesiredState(startId)
+        }
+        // A restart is an implementation detail, not a user-requested disconnect.
+        app.setWantRunning(false, reconcileDesiredState = false) {
           close()
-          START_NOT_STICKY
-        }
-        ACTION_RESTART_VPN -> {
-          // A restart is an implementation detail, not a user-requested disconnect.
-          TailwareVpnStateStore.setDesiredVpnEnabled(this, true)
-          app.setWantRunning(false) {
-            close()
-            app.startVPN()
+          val desired = TailwareVpnStateStore.desiredVpnState(this)
+          if (desired.enabled) {
+            app.restoreVPN(desired)
           }
-          START_NOT_STICKY
         }
-        ACTION_START_FOREGROUND_ONLY -> {
-          // Start the foreground service notification without creating a VPN tunnel.
-          // This is used during interactive login so that Android does not freeze the process
-          // or restrict network access while the user completes auth in the browser.
-          showForegroundNotification()
-          START_NOT_STICKY
+        START_NOT_STICKY
+      }
+      ACTION_START_FOREGROUND_ONLY -> {
+        // Start the foreground service notification without creating a VPN tunnel.
+        // This is used during interactive login so that Android does not freeze the process
+        // or restrict network access while the user completes auth in the browser.
+        showForegroundNotification()
+        START_NOT_STICKY
+      }
+      ACTION_START_VPN -> {
+        if (!acceptCommand(intent, requestedEnabled = true)) {
+          return reconcileCurrentDesiredState(startId)
         }
-        ACTION_START_VPN -> {
-          TailwareVpnStateStore.setDesiredVpnEnabled(this, true)
+        // A newer START can arrive while Android is still tearing down an older STOP.
+        closed = false
+        showForegroundNotification()
+        app.setWantRunning(true)
+        Libtailscale.requestVPN(this)
+        START_STICKY
+      }
+      "android.net.VpnService" -> {
+        // This means we were started by Android due to Always On VPN.
+        // Android's setting is not allowed to overwrite an explicit Tailware OFF choice.
+        if (TailwareVpnStateStore.desiredVpnEnabled(this) &&
+            UninitializedApp.get().isAbleToStartVPN()) {
+          // A system-started VpnService must still promote itself immediately.
           showForegroundNotification()
           app.setWantRunning(true)
           Libtailscale.requestVPN(this)
           START_STICKY
-        }
-        "android.net.VpnService" -> {
-          // This means we were started by Android due to Always On VPN.
-          // Android's setting is not allowed to overwrite an explicit Tailware OFF choice.
-          if (TailwareVpnStateStore.desiredVpnEnabled(this) &&
-              UninitializedApp.get().isAbleToStartVPN()) {
-            // A system-started VpnService must still promote itself immediately.
-            showForegroundNotification()
-            app.setWantRunning(true)
-            Libtailscale.requestVPN(this)
-            START_STICKY
-          } else {
-            app.setWantRunning(false)
-            stopSelf(startId)
-            START_NOT_STICKY
-          }
-        }
-        else -> {
-          // This means that we were restarted after the service was killed
-          // (potentially due to OOM).
-          if (TailwareVpnStateStore.desiredVpnEnabled(this) &&
-              UninitializedApp.get().isAbleToStartVPN()) {
-            showForegroundNotification()
-            app.setWantRunning(true)
-            Libtailscale.requestVPN(this)
-            START_STICKY
-          } else {
-            app.setWantRunning(false)
-            stopSelf(startId)
-            START_NOT_STICKY
-          }
+        } else {
+          app.setWantRunning(false)
+          stopSelf(startId)
+          START_NOT_STICKY
         }
       }
+      else -> {
+        // This means that we were restarted after the service was killed
+        // (potentially due to OOM).
+        if (TailwareVpnStateStore.desiredVpnEnabled(this) &&
+            UninitializedApp.get().isAbleToStartVPN()) {
+          showForegroundNotification()
+          app.setWantRunning(true)
+          Libtailscale.requestVPN(this)
+          START_STICKY
+        } else {
+          app.setWantRunning(false)
+          stopSelf(startId)
+          START_NOT_STICKY
+        }
+      }
+    }
+  }
+
+  private fun reconcileCurrentDesiredState(startId: Int): Int {
+    return if (TailwareVpnStateStore.desiredVpnEnabled(this) &&
+        UninitializedApp.get().isAbleToStartVPN()) {
+      closed = false
+      showForegroundNotification()
+      app.setWantRunning(true)
+      Libtailscale.requestVPN(this)
+      START_STICKY
+    } else {
+      app.setWantRunning(false)
+      stopSelf(startId)
+      START_NOT_STICKY
+    }
+  }
+
+  private fun acceptCommand(intent: Intent, requestedEnabled: Boolean): Boolean {
+    if (!intent.hasExtra(EXTRA_COMMAND_GENERATION)) {
+      // Notification actions and other direct service intents become the newest explicit command.
+      TailwareVpnStateStore.requestVpnEnabled(this, requestedEnabled)
+      return true
+    }
+    val commandGeneration = intent.getLongExtra(EXTRA_COMMAND_GENERATION, Long.MIN_VALUE)
+    return com.tailscale.ipn.wear.isCurrentVpnCommand(
+        commandGeneration,
+        requestedEnabled,
+        TailwareVpnStateStore.desiredVpnState(this),
+    )
+  }
 
   override fun close() {
     if (closed) return
@@ -243,5 +284,6 @@ open class IPNService : VpnService(), libtailscale.IPNService {
     const val ACTION_STOP_VPN = "com.tailscale.ipn.STOP_VPN"
     const val ACTION_RESTART_VPN = "com.tailscale.ipn.RESTART_VPN"
     const val ACTION_START_FOREGROUND_ONLY = "com.tailscale.ipn.START_FOREGROUND_ONLY"
+    const val EXTRA_COMMAND_GENERATION = "com.tailscale.ipn.extra.COMMAND_GENERATION"
   }
 }

@@ -16,6 +16,7 @@ import androidx.lifecycle.viewModelScope
 import com.tailscale.ipn.App
 import com.tailscale.ipn.NetworkChangeCallback
 import com.tailscale.ipn.UnderlyingNetworkStatus
+import com.tailscale.ipn.ui.Links
 import com.tailscale.ipn.ui.localapi.Client
 import com.tailscale.ipn.ui.model.Health
 import com.tailscale.ipn.ui.model.Ipn
@@ -28,8 +29,11 @@ import com.tailscale.ipn.ui.viewModel.IpnViewModel
 import com.tailscale.ipn.wear.tile.TailwareTileUpdates
 import java.security.MessageDigest
 import java.util.Locale
+import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,7 +43,9 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 
 internal fun shouldAcceptLoginUrl(
     activeAttempt: Boolean,
@@ -79,6 +85,10 @@ class TailwareViewModel : IpnViewModel() {
       localPreferences.getString(KEY_LAST_PRESENTED_LOGIN_URL_FINGERPRINT, null)
   private var loginCancellationInProgress = false
   private var loginCancellationGeneration = 0L
+  private var loginCleanupRequired = false
+  private var pendingLoginStart: (() -> Unit)? = null
+  private var postCleanupError: WearError? = null
+  private var automaticVpnRestoreAttempted = false
   private var logoutProfile: IpnLocal.LoginProfile? = null
 
   private val _uiState =
@@ -86,10 +96,15 @@ class TailwareViewModel : IpnViewModel() {
           WearUiState(
               language =
                   TailwareLanguage.fromStoredValue(localPreferences.getString(KEY_LANGUAGE, null)),
+              desiredVpnEnabled = TailwareVpnStateStore.desiredVpnEnabled(app),
               optionalNotificationsEnabled = initialOptionalNotificationsEnabled(),
+              optionalNotificationsBlockedBySystem = initialOptionalNotificationsBlocked(),
               tileQuickAction =
                   TileQuickAction.fromStoredValue(
                       localPreferences.getString(KEY_TILE_QUICK_ACTION, null)),
+              tileShowIp = localPreferences.getBoolean(KEY_TILE_SHOW_IP, true),
+              tileShowExitNode = localPreferences.getBoolean(KEY_TILE_SHOW_EXIT_NODE, true),
+              tileShowMagicDns = localPreferences.getBoolean(KEY_TILE_SHOW_MAGIC_DNS, true),
           ))
   val uiState: StateFlow<WearUiState> = _uiState.asStateFlow()
 
@@ -114,6 +129,7 @@ class TailwareViewModel : IpnViewModel() {
     observeBackend()
     observeLoginUrl()
     observeLoginCompletion()
+    observeLoginErrors()
     refreshVpnAuthorization(app)
   }
 
@@ -156,12 +172,14 @@ class TailwareViewModel : IpnViewModel() {
         // previous AuthURL while its new control client is starting.
         if (!shouldAcceptLoginUrl(acceptLoginUrls, url, staleLoginUrlFingerprint)) return@collect
         rememberPresentedLoginUrl(url)
+        busyTimeoutJob?.cancel()
         _uiState.update { current ->
           current.copy(
               accountState = WearAccountState.Authenticating,
               loginUrl = url,
               loginCode = loginCodeFromUrl(url),
-              phoneLoginSent = false,
+              phoneLoginStatus = PhoneLoginStatus.Idle,
+              phoneLoginError = null,
               busyAction = null,
           )
         }
@@ -177,17 +195,54 @@ class TailwareViewModel : IpnViewModel() {
           return@collect
         }
         acceptLoginUrls = false
+        busyTimeoutJob?.cancel()
         Notifier.browseToURL.set(null)
         Notifier.loginFinished.set(null)
         _uiState.update {
           it.copy(
               loginUrl = null,
               loginCode = null,
-              phoneLoginSent = false,
+              activeLoginMethod = null,
+              phoneLoginStatus = PhoneLoginStatus.Idle,
+              phoneLoginError = null,
               busyAction = null,
               error = null,
           )
         }
+      }
+    }
+  }
+
+  private fun observeLoginErrors() {
+    viewModelScope.launch {
+      Notifier.errMessage.filterNotNull().collect { backendMessage ->
+        Notifier.errMessage.set(null)
+        if (!acceptLoginUrls) return@collect
+
+        val currentMethod = _uiState.value.activeLoginMethod
+        val origin = currentMethod.errorOrigin
+        val readableBackendMessage =
+            backendMessage.replace(Regex("\\s+"), " ").trim().take(MAX_BACKEND_ERROR_LENGTH)
+        val message =
+            when (currentMethod) {
+              LoginMethod.AuthenticationKey ->
+                  if (_uiState.value.underlyingNetworkStatus == UnderlyingNetworkStatus.Offline) {
+                    "The authentication key could not be checked because the watch is offline."
+                  } else {
+                    "Authentication failed: $readableBackendMessage Check that the key is valid and not expired."
+                  }
+              LoginMethod.CustomServer ->
+                  "The custom server refused the sign-in request: $readableBackendMessage"
+              LoginMethod.Tailscale,
+              null -> "Tailscale could not start sign-in: $readableBackendMessage"
+            }
+
+        startLoginCancellation(
+            WearError(
+                operation = WearAction.Login,
+                message = message,
+                origin = origin,
+            ))
       }
     }
   }
@@ -198,11 +253,6 @@ class TailwareViewModel : IpnViewModel() {
       acceptLoginUrls = false
       if (Notifier.browseToURL.value != null) Notifier.browseToURL.set(null)
       if (Notifier.loginFinished.value != null) Notifier.loginFinished.set(null)
-    }
-    if (!hasProfile && snapshot.profiles != null && snapshot.ipnState == Ipn.State.NeedsLogin) {
-      // A proven signed-out state must never retain an older reboot-on preference. Do not mirror
-      // WantRunning here: service actions are the authority for the user's on/off choice.
-      TailwareVpnStateStore.setDesiredVpnEnabled(app, false)
     }
     _uiState.update { current ->
       val resolvedAccountState = accountState(snapshot, current)
@@ -277,7 +327,14 @@ class TailwareViewModel : IpnViewModel() {
       current.copy(
           accountState = resolvedAccountState,
           ipnState = snapshot.ipnState,
-          tunnelStatus = tunnelStatus(snapshot.ipnState, snapshot.vpnActive, current.busyAction),
+          desiredVpnEnabled = TailwareVpnStateStore.desiredVpnEnabled(app),
+          tunnelStatus =
+              tunnelStatus(
+                  snapshot.ipnState,
+                  snapshot.vpnActive,
+                  current.busyAction,
+                  TailwareVpnStateStore.desiredVpnEnabled(app),
+              ),
           vpnAuthorization = vpnAuthorizationFromPrepared(snapshot.vpnPrepared),
           profileId = snapshot.profile?.ID,
           profileDisplayName = snapshot.profile?.UserProfile?.DisplayName,
@@ -305,10 +362,13 @@ class TailwareViewModel : IpnViewModel() {
           healthWarnings = healthWarnings,
           loginUrl = if (hasProfile) null else current.loginUrl,
           loginCode = if (hasProfile) null else current.loginCode,
-          phoneLoginSent = if (hasProfile) false else current.phoneLoginSent,
+          activeLoginMethod = if (hasProfile) null else current.activeLoginMethod,
+          phoneLoginStatus = if (hasProfile) PhoneLoginStatus.Idle else current.phoneLoginStatus,
+          phoneLoginError = if (hasProfile) null else current.phoneLoginError,
           busyAction = settledBusyAction(current.busyAction, snapshot),
       )
     }
+    maybeRestoreDesiredVpn(snapshot, hasProfile)
   }
 
   private fun accountState(
@@ -329,6 +389,7 @@ class TailwareViewModel : IpnViewModel() {
       ipnState: Ipn.State,
       vpnActive: Boolean,
       busyAction: WearAction?,
+      desiredVpnEnabled: Boolean,
   ): WearTunnelStatus =
       when {
         ipnState == Ipn.State.Stopping || busyAction == WearAction.Disconnect ->
@@ -336,9 +397,39 @@ class TailwareViewModel : IpnViewModel() {
         ipnState == Ipn.State.Running && vpnActive -> WearTunnelStatus.Connected
         ipnState == Ipn.State.Starting -> WearTunnelStatus.Connecting
         busyAction == WearAction.Connect -> WearTunnelStatus.Connecting
+        desiredVpnEnabled -> WearTunnelStatus.Connecting
         ipnState == Ipn.State.NoState -> WearTunnelStatus.Unknown
         else -> WearTunnelStatus.Disconnected
       }
+
+  private fun maybeRestoreDesiredVpn(snapshot: BackendSnapshot, hasProfile: Boolean) {
+    val desired = TailwareVpnStateStore.desiredVpnState(app)
+    if (automaticVpnRestoreAttempted ||
+        !hasProfile ||
+        !desired.enabled ||
+        !snapshot.vpnPrepared ||
+        snapshot.vpnActive ||
+        snapshot.ipnState <= Ipn.State.NeedsMachineAuth ||
+        snapshot.ipnState == Ipn.State.Starting ||
+        snapshot.ipnState == Ipn.State.Stopping) {
+      return
+    }
+    automaticVpnRestoreAttempted = true
+    if (!app.restoreVPN(desired)) {
+      val reset = TailwareVpnStateStore.setDesiredVpnEnabledIfCurrent(app, desired, false)
+      if (reset == null) return
+      _uiState.update {
+        it.copy(
+            desiredVpnEnabled = false,
+            tunnelStatus = WearTunnelStatus.Disconnected,
+        )
+      }
+      setError(
+          WearAction.Connect,
+          "Tailware could not restore the VPN automatically. Tap the connection control to retry.",
+      )
+    }
+  }
 
   private fun healthWarnings(
       snapshot: BackendSnapshot,
@@ -480,89 +571,273 @@ class TailwareViewModel : IpnViewModel() {
     }
 
     val generation = startBusyAction(WearAction.Connect)
-    startVPN()
+    _uiState.update { it.copy(desiredVpnEnabled = true) }
+    val dispatch = app.startVPNCommand()
+    if (!dispatch.dispatched) {
+      val reset = TailwareVpnStateStore.setDesiredVpnEnabledIfCurrent(app, dispatch.command, false)
+      if (reset == null) {
+        val newerDesired = TailwareVpnStateStore.desiredVpnState(app)
+        updateForAction(WearAction.Connect, generation) {
+          it.copy(desiredVpnEnabled = newerDesired.enabled, busyAction = null)
+        }
+        return
+      }
+      _uiState.update {
+        it.copy(
+            desiredVpnEnabled = false,
+            tunnelStatus = WearTunnelStatus.Disconnected,
+        )
+      }
+      completeFailure(
+          WearAction.Connect,
+          IllegalStateException("Android did not allow Tailware to start the VPN service."),
+          generation,
+      )
+      return
+    }
     clearBusyAfterTimeout(WearAction.Connect, generation)
   }
 
   fun disconnect() {
     val generation = startBusyAction(WearAction.Disconnect)
-    stopVPN()
+    _uiState.update { it.copy(desiredVpnEnabled = false) }
+    val dispatch = app.stopVPNCommand()
+    if (!dispatch.dispatched) {
+      if (TailwareVpnStateStore.desiredVpnState(app) != dispatch.command) {
+        val newerDesired = TailwareVpnStateStore.desiredVpnState(app)
+        updateForAction(WearAction.Disconnect, generation) {
+          it.copy(desiredVpnEnabled = newerDesired.enabled, busyAction = null)
+        }
+        return
+      }
+      completeFailure(
+          WearAction.Disconnect,
+          IllegalStateException("Android did not allow Tailware to stop the VPN service."),
+          generation,
+      )
+      return
+    }
     clearBusyAfterTimeout(WearAction.Disconnect, generation)
   }
 
-  fun startInteractiveLogin() {
-    if (_uiState.value.busyAction == WearAction.Login || loginCancellationInProgress) return
-    val generation = beginLoginAttempt()
-    login(useForegroundService = false) { result ->
-      completeUnitAction(WearAction.Login, result, generation)
+  fun toggleConnection() {
+    val current = _uiState.value
+    if (current.error?.operation == WearAction.Disconnect && !current.desiredVpnEnabled) {
+      disconnect()
+    } else if (current.desiredVpnEnabled) {
+      disconnect()
+    } else {
+      connect()
     }
   }
 
-  fun startAuthKeyLogin(authKey: String) {
-    if (_uiState.value.busyAction == WearAction.Login || loginCancellationInProgress) return
+  fun prepareLoginMethod(method: LoginMethod) {
+    if (_uiState.value.activeLoginMethod == method) return
+    busyTimeoutJob?.cancel()
+    acceptLoginUrls = false
+    Notifier.browseToURL.set(null)
+    Notifier.loginFinished.set(null)
+    Notifier.errMessage.set(null)
+    _uiState.update {
+      it.copy(
+          activeLoginMethod = method,
+          loginUrl = null,
+          loginCode = null,
+          phoneLoginStatus = PhoneLoginStatus.Idle,
+          phoneLoginError = null,
+          busyAction = if (it.busyAction == WearAction.Login) null else it.busyAction,
+      )
+    }
+  }
+
+  fun startInteractiveLogin(presentation: LoginPresentation = LoginPresentation.QrCode): Boolean {
+    if (loginCancellationInProgress) return false
+    if (loginCleanupRequired) {
+      pendingLoginStart = { startInteractiveLogin(presentation) }
+      startLoginCancellation()
+      return true
+    }
+    if (_uiState.value.busyAction == WearAction.Login) return false
+    val generation = beginLoginAttempt(LoginMethod.Tailscale, presentation)
+    login(
+        maskedPrefs = Ipn.MaskedPrefs().apply { ControlURL = Links.DEFAULT_CONTROL_URL },
+        useForegroundService = false,
+    ) { result ->
+      completeUnitAction(WearAction.Login, result, generation)
+    }
+    return true
+  }
+
+  fun startAuthKeyLogin(authKey: String): Boolean {
+    if (loginCancellationInProgress) return false
+    if (loginCleanupRequired) {
+      pendingLoginStart = { startAuthKeyLogin(authKey) }
+      startLoginCancellation()
+      return true
+    }
+    if (_uiState.value.busyAction == WearAction.Login) return false
     if (authKey.isBlank()) {
-      setError(WearAction.Login, "Enter an auth key.")
-      return
+      setError(
+          WearAction.Login,
+          "Enter an authentication key.",
+          WearErrorOrigin.AuthenticationKey,
+      )
+      return false
     }
-    val generation = beginLoginAttempt()
-    loginWithAuthKey(authKey.trim(), useForegroundService = false) { result ->
+    val generation = beginLoginAttempt(LoginMethod.AuthenticationKey, LoginPresentation.QrCode)
+    login(
+        maskedPrefs = Ipn.MaskedPrefs().apply { ControlURL = Links.DEFAULT_CONTROL_URL },
+        authKey = authKey.trim(),
+        useForegroundService = false,
+    ) { result ->
       completeUnitAction(WearAction.Login, result, generation)
     }
+    return true
   }
 
-  fun startCustomControlLogin(controlUrl: String) {
-    if (_uiState.value.busyAction == WearAction.Login || loginCancellationInProgress) return
+  fun startCustomControlLogin(controlUrl: String): Boolean {
+    if (loginCancellationInProgress) return false
+    if (loginCleanupRequired) {
+      pendingLoginStart = { startCustomControlLogin(controlUrl) }
+      startLoginCancellation()
+      return true
+    }
+    if (_uiState.value.busyAction == WearAction.Login) return false
     val normalized = controlUrl.trim()
     val parsedUrl = normalized.toUri()
     if (!parsedUrl.scheme.equals("https", ignoreCase = true) || parsedUrl.host.isNullOrBlank()) {
-      setError(WearAction.Login, "Enter a valid HTTPS control server URL.")
-      return
+      setError(
+          WearAction.Login,
+          "Enter a valid HTTPS control server URL.",
+          WearErrorOrigin.CustomServer,
+      )
+      return false
     }
-    val generation = beginLoginAttempt()
+    val generation = beginLoginAttempt(LoginMethod.CustomServer, LoginPresentation.QrCode)
     loginWithCustomControlURL(normalized, useForegroundService = false) { result ->
       completeUnitAction(WearAction.Login, result, generation)
     }
+    return true
+  }
+
+  fun cancelLoginIfActive(method: LoginMethod) {
+    if (_uiState.value.activeLoginMethod != method) return
+    cancelInteractiveLogin()
+  }
+
+  fun regenerateInteractiveLogin(presentation: LoginPresentation) {
+    if (loginCancellationInProgress) return
+    pendingLoginStart = { startInteractiveLogin(presentation) }
+    startLoginCancellation()
   }
 
   fun cancelInteractiveLogin() {
+    pendingLoginStart = null
+    postCleanupError = null
+    startLoginCancellation()
+  }
+
+  private fun startLoginCancellation(errorAfterCleanup: WearError? = null) {
     if (loginCancellationInProgress) return
-    if (_uiState.value.accountState == WearAccountState.SignedIn ||
-        _uiState.value.accountState == WearAccountState.NeedsMachineAuthorization) {
+    if (!acceptLoginUrls &&
+        _uiState.value.busyAction != WearAction.Login &&
+        !loginCleanupRequired) {
+      val pending = pendingLoginStart
+      pendingLoginStart = null
+      pending?.invoke()
       return
     }
+    if (_uiState.value.accountState == WearAccountState.SignedIn ||
+        _uiState.value.accountState == WearAccountState.NeedsMachineAuthorization) {
+      pendingLoginStart = null
+      return
+    }
+    postCleanupError = errorAfterCleanup
     loginCancellationInProgress = true
+    loginCleanupRequired = true
     loginCancellationGeneration += 1
     val cancellationGeneration = loginCancellationGeneration
     acceptLoginUrls = false
     Notifier.browseToURL.set(null)
     Notifier.loginFinished.set(null)
+    Notifier.errMessage.set(null)
     TailwareVpnStateStore.setDesiredVpnEnabled(app, false)
-    stopVPN()
     startBusyAction(WearAction.Login, clearLogin = true)
     viewModelScope.launch {
-      val result =
-          withContext(Dispatchers.IO) {
-            runCatching {
-              // DisconnectControl atomically clears the pending AuthURL without changing the
-              // selected profile, node keys, or persisted login preferences.
-              app.getLibtailscaleApp().cancelInteractiveLogin()
-            }
-          }
+      val result = cleanUpLoginAttempt()
       completeLoginCancellation(result, cancellationGeneration)
+    }
+  }
+
+  private suspend fun cleanUpLoginAttempt(): Result<Unit> =
+      try {
+        withTimeout(LOGIN_CLEANUP_TIMEOUT_MILLIS) {
+          setBackendWantRunningForCleanup(false).getOrThrow()
+          withContext(Dispatchers.IO) {
+            // DisconnectControl atomically clears the pending AuthURL without changing the
+            // selected profile or node keys. Waiting for both operations prevents an old STOP
+            // patch from racing a newly requested login.
+            app.getLibtailscaleApp().cancelInteractiveLogin()
+          }
+        }
+        Result.success(Unit)
+      } catch (_: TimeoutCancellationException) {
+        Result.failure(
+            IllegalStateException(
+                "The previous sign-in attempt could not be cleaned up in time. Try again."))
+      } catch (error: CancellationException) {
+        throw error
+      } catch (error: Throwable) {
+        Result.failure(error)
+      }
+
+  private suspend fun setBackendWantRunningForCleanup(wantRunning: Boolean): Result<Unit> =
+      suspendCancellableCoroutine { continuation ->
+        Client(viewModelScope).editPrefs(
+            Ipn.MaskedPrefs().apply { WantRunning = wantRunning },
+        ) { result ->
+          if (continuation.isActive) continuation.resume(result.map { Unit })
+        }
+      }
+
+  fun onPhoneLoginOpening(url: String) {
+    if (_uiState.value.loginUrl != url) return
+    _uiState.update {
+      it.copy(
+          phoneLoginStatus = PhoneLoginStatus.Opening,
+          phoneLoginError = null,
+      )
     }
   }
 
   fun onPhoneLoginOpened(url: String) {
     if (_uiState.value.loginUrl != url) return
-    _uiState.update { it.copy(phoneLoginSent = true, error = null) }
+    _uiState.update {
+      it.copy(
+          phoneLoginStatus = PhoneLoginStatus.Sent,
+          phoneLoginError = null,
+      )
+    }
   }
 
   fun onPhoneLoginLaunchFailed(url: String, error: Throwable) {
     if (_uiState.value.loginUrl != url) return
-    setError(
-        WearAction.Login,
-        "Could not open the sign-in page on the paired phone: ${error.readableMessage()}",
-    )
+    _uiState.update {
+      it.copy(
+          phoneLoginStatus = PhoneLoginStatus.Failed,
+          phoneLoginError =
+              "Could not open the sign-in page on the paired phone: ${error.readableMessage()}",
+      )
+    }
+  }
+
+  fun clearPhoneLoginError() {
+    _uiState.update {
+      it.copy(
+          phoneLoginStatus = PhoneLoginStatus.Idle,
+          phoneLoginError = null,
+      )
+    }
   }
 
   fun logoutAccount() {
@@ -588,7 +863,9 @@ class TailwareViewModel : IpnViewModel() {
               it.copy(
                   loginUrl = null,
                   loginCode = null,
-                  phoneLoginSent = false,
+                  activeLoginMethod = null,
+                  phoneLoginStatus = PhoneLoginStatus.Idle,
+                  phoneLoginError = null,
                   pingResult = WearPingResult(),
                   error = null,
               )
@@ -662,6 +939,10 @@ class TailwareViewModel : IpnViewModel() {
     val peer = netmap?.getPeer(stableId)
     if (peer == null) {
       setError(WearAction.Ping, "The selected device is no longer available.")
+      return
+    }
+    if (peer.isSelfNode(netmap)) {
+      setError(WearAction.Ping, "This is this watch; a self-ping does not test a network path.")
       return
     }
     if (peer.primaryIPv4Address.isNullOrBlank()) {
@@ -748,25 +1029,47 @@ class TailwareViewModel : IpnViewModel() {
   fun setOptionalNotificationsEnabled(enabled: Boolean) {
     localPreferences.edit { putBoolean(KEY_OPTIONAL_NOTIFICATIONS, enabled) }
     app.refreshOptionalWearStatusNotification()
-    _uiState.update { it.copy(optionalNotificationsEnabled = enabled) }
+    syncOptionalNotificationPermission()
+  }
+
+  fun onOptionalNotificationPermissionFinished() {
+    // Keep the user's ON intent after a denial so Settings can accurately explain that Android,
+    // rather than Tailware's own switch, is blocking notifications.
+    localPreferences.edit { putBoolean(KEY_OPTIONAL_NOTIFICATIONS, true) }
+    app.refreshOptionalWearStatusNotification()
+    syncOptionalNotificationPermission()
   }
 
   fun syncOptionalNotificationPermission() {
     _uiState.update {
-      it.copy(optionalNotificationsEnabled = initialOptionalNotificationsEnabled())
+      it.copy(
+          optionalNotificationsEnabled = initialOptionalNotificationsEnabled(),
+          optionalNotificationsBlockedBySystem = initialOptionalNotificationsBlocked(),
+      )
     }
-  }
-
-  fun onVpnSettingsLaunchFailed() {
-    setError(
-        null,
-        "Android could not open VPN settings on this watch. Use the one-time ADB setup instead.",
-    )
   }
 
   fun setTileQuickAction(action: TileQuickAction) {
     localPreferences.edit { putString(KEY_TILE_QUICK_ACTION, action.name) }
     _uiState.update { it.copy(tileQuickAction = action) }
+    TailwareTileUpdates.request(app)
+  }
+
+  fun setTileShowIp(show: Boolean) {
+    localPreferences.edit { putBoolean(KEY_TILE_SHOW_IP, show) }
+    _uiState.update { it.copy(tileShowIp = show) }
+    TailwareTileUpdates.request(app)
+  }
+
+  fun setTileShowExitNode(show: Boolean) {
+    localPreferences.edit { putBoolean(KEY_TILE_SHOW_EXIT_NODE, show) }
+    _uiState.update { it.copy(tileShowExitNode = show) }
+    TailwareTileUpdates.request(app)
+  }
+
+  fun setTileShowMagicDns(show: Boolean) {
+    localPreferences.edit { putBoolean(KEY_TILE_SHOW_MAGIC_DNS, show) }
+    _uiState.update { it.copy(tileShowMagicDns = show) }
     TailwareTileUpdates.request(app)
   }
 
@@ -778,6 +1081,12 @@ class TailwareViewModel : IpnViewModel() {
     val defaultEnabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
     val requested = localPreferences.getBoolean(KEY_OPTIONAL_NOTIFICATIONS, defaultEnabled)
     return requested && NotificationManagerCompat.from(app).areNotificationsEnabled()
+  }
+
+  private fun initialOptionalNotificationsBlocked(): Boolean {
+    val defaultEnabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+    val requested = localPreferences.getBoolean(KEY_OPTIONAL_NOTIFICATIONS, defaultEnabled)
+    return requested && !NotificationManagerCompat.from(app).areNotificationsEnabled()
   }
 
   @Suppress("DEPRECATION")
@@ -803,12 +1112,25 @@ class TailwareViewModel : IpnViewModel() {
     }
   }
 
-  private fun beginLoginAttempt(): Long {
+  private fun beginLoginAttempt(
+      method: LoginMethod,
+      presentation: LoginPresentation,
+  ): Long {
     (_uiState.value.loginUrl ?: Notifier.browseToURL.value)?.let {
       staleLoginUrlFingerprint = loginUrlFingerprint(it)
     }
     acceptLoginUrls = true
     Notifier.loginFinished.set(null)
+    Notifier.errMessage.set(null)
+    _uiState.update {
+      it.copy(
+          activeLoginMethod = method,
+          loginPresentation = presentation,
+          phoneLoginStatus = PhoneLoginStatus.Idle,
+          phoneLoginError = null,
+          error = null,
+      )
+    }
     return startBusyAction(WearAction.Login, clearLogin = true)
   }
 
@@ -820,6 +1142,11 @@ class TailwareViewModel : IpnViewModel() {
     loginCancellationInProgress = false
     result
         .onSuccess {
+          loginCleanupRequired = false
+          val pending = pendingLoginStart
+          val finalError = postCleanupError
+          pendingLoginStart = null
+          postCleanupError = null
           _uiState.update {
             it.copy(
                 accountState =
@@ -827,12 +1154,18 @@ class TailwareViewModel : IpnViewModel() {
                 busyAction = if (it.busyAction == WearAction.Login) null else it.busyAction,
                 loginUrl = null,
                 loginCode = null,
-                phoneLoginSent = false,
-                error = null,
+                activeLoginMethod = null,
+                phoneLoginStatus = PhoneLoginStatus.Idle,
+                phoneLoginError = null,
+                error = finalError,
             )
           }
+          pending?.invoke()
         }
         .onFailure { error ->
+          loginCleanupRequired = true
+          pendingLoginStart = null
+          postCleanupError = null
           acceptLoginUrls = false
           Notifier.browseToURL.set(null)
           _uiState.update {
@@ -840,8 +1173,16 @@ class TailwareViewModel : IpnViewModel() {
                 busyAction = if (it.busyAction == WearAction.Login) null else it.busyAction,
                 loginUrl = null,
                 loginCode = null,
-                phoneLoginSent = false,
-                error = WearError(operation = WearAction.Login, message = error.readableMessage()),
+                activeLoginMethod = null,
+                phoneLoginStatus = PhoneLoginStatus.Idle,
+                phoneLoginError = null,
+                error =
+                    WearError(
+                        operation = WearAction.Login,
+                        message =
+                            "Tailware could not safely close the previous sign-in attempt: ${error.readableMessage()}",
+                        origin = WearErrorOrigin.Global,
+                    ),
             )
           }
         }
@@ -910,6 +1251,17 @@ class TailwareViewModel : IpnViewModel() {
             return@currentProfileCallback
           }
 
+          if (remainingOldProfile != null &&
+              !allowLocalCleanup &&
+              verificationAttempt < MAX_LOGOUT_VERIFICATION_ATTEMPTS) {
+            verifyLogoutProfile(
+                generation = generation,
+                allowLocalCleanup = false,
+                verificationAttempt = verificationAttempt + 1,
+            )
+            return@currentProfileCallback
+          }
+
           if (!isCurrentAction(WearAction.Logout, generation)) return@currentProfileCallback
           loginProfiles.set(profiles)
           loggedInUser.set(normalizedCurrent)
@@ -960,7 +1312,8 @@ class TailwareViewModel : IpnViewModel() {
           error = null,
           loginUrl = if (clearLogin) null else it.loginUrl,
           loginCode = if (clearLogin) null else it.loginCode,
-          phoneLoginSent = if (clearLogin) false else it.phoneLoginSent,
+          phoneLoginStatus = if (clearLogin) PhoneLoginStatus.Idle else it.phoneLoginStatus,
+          phoneLoginError = if (clearLogin) null else it.phoneLoginError,
       )
     }
     return actionGeneration
@@ -982,23 +1335,43 @@ class TailwareViewModel : IpnViewModel() {
 
   private fun completeFailure(action: WearAction, error: Throwable, generation: Long) {
     if (!isCurrentAction(action, generation)) return
+    val origin =
+        if (action == WearAction.Login) _uiState.value.activeLoginMethod.errorOrigin
+        else WearErrorOrigin.Global
     if (action == WearAction.Login) {
-      acceptLoginUrls = false
-      Notifier.browseToURL.set(null)
+      startLoginCancellation(
+          WearError(
+              operation = action,
+              message = error.readableMessage(),
+              origin = origin,
+          ))
+      return
     }
     updateForAction(action, generation) {
       it.copy(
           busyAction = null,
-          error = WearError(operation = action, message = error.readableMessage()),
+          error =
+              WearError(
+                  operation = action,
+                  message = error.readableMessage(),
+                  origin = origin,
+              ),
       )
     }
   }
 
-  private fun setError(action: WearAction?, message: String) {
+  private fun setError(
+      action: WearAction?,
+      message: String,
+      origin: WearErrorOrigin = WearErrorOrigin.Global,
+  ) {
     actionGeneration += 1
     busyTimeoutJob?.cancel()
     _uiState.update {
-      it.copy(busyAction = null, error = WearError(operation = action, message = message))
+      it.copy(
+          busyAction = null,
+          error = WearError(operation = action, message = message, origin = origin),
+      )
     }
   }
 
@@ -1015,6 +1388,26 @@ class TailwareViewModel : IpnViewModel() {
     busyTimeoutJob =
         viewModelScope.launch {
           delay(timeoutMillis)
+          if (action == WearAction.Login && isCurrentAction(action, generation)) {
+            val current = _uiState.value
+            val message =
+                when (current.activeLoginMethod) {
+                  LoginMethod.AuthenticationKey ->
+                      "The authentication key could not be verified. Check that it is valid and try again."
+                  LoginMethod.CustomServer ->
+                      "The custom server is taking too long to answer. Check its address and connection."
+                  LoginMethod.Tailscale,
+                  null ->
+                      "Tailscale sign-in is taking longer than expected. Check the watch connection."
+                }
+            startLoginCancellation(
+                WearError(
+                    operation = WearAction.Login,
+                    message = message,
+                    origin = current.activeLoginMethod.errorOrigin,
+                ))
+            return@launch
+          }
           _uiState.update {
             if (it.busyAction == action && actionGeneration == generation) {
               it.copy(
@@ -1023,6 +1416,7 @@ class TailwareViewModel : IpnViewModel() {
                       WearError(
                           operation = action,
                           message = "The operation is taking longer than expected.",
+                          origin = WearErrorOrigin.Global,
                       ),
               )
             } else {
@@ -1111,19 +1505,33 @@ class TailwareViewModel : IpnViewModel() {
   private fun Throwable.readableMessage(): String =
       message?.takeIf { it.isNotBlank() } ?: this::class.simpleName ?: "Unknown error"
 
+  private val LoginMethod?.errorOrigin: WearErrorOrigin
+    get() =
+        when (this) {
+          LoginMethod.AuthenticationKey -> WearErrorOrigin.AuthenticationKey
+          LoginMethod.CustomServer -> WearErrorOrigin.CustomServer
+          LoginMethod.Tailscale,
+          null -> WearErrorOrigin.InteractiveLogin
+        }
+
   companion object {
     private const val PREFERENCES_FILE = "tailware_wear_preferences"
     private const val KEY_LANGUAGE = "language"
     private const val KEY_OPTIONAL_NOTIFICATIONS = "optional_notifications"
     private const val KEY_TILE_QUICK_ACTION = "tile_quick_action"
+    private const val KEY_TILE_SHOW_IP = "tile_show_ip"
+    private const val KEY_TILE_SHOW_EXIT_NODE = "tile_show_exit_node"
+    private const val KEY_TILE_SHOW_MAGIC_DNS = "tile_show_magic_dns"
     private const val KEY_LAST_PRESENTED_LOGIN_URL = "last_presented_login_url"
     private const val KEY_LAST_PRESENTED_LOGIN_URL_FINGERPRINT =
         "last_presented_login_url_fingerprint"
     private const val LOGIN_URL_PREFIX = "https://login.tailscale.com/a/"
     private const val ACTION_TIMEOUT_MILLIS = 15_000L
     private const val LOGIN_TIMEOUT_MILLIS = 30_000L
+    private const val LOGIN_CLEANUP_TIMEOUT_MILLIS = 15_000L
     private const val LOGOUT_TIMEOUT_MILLIS = 35_000L
-    private const val LOGOUT_VERIFICATION_DELAY_MILLIS = 600L
-    private const val MAX_LOGOUT_VERIFICATION_ATTEMPTS = 5
+    private const val LOGOUT_VERIFICATION_DELAY_MILLIS = 750L
+    private const val MAX_LOGOUT_VERIFICATION_ATTEMPTS = 12
+    private const val MAX_BACKEND_ERROR_LENGTH = 180
   }
 }

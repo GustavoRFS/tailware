@@ -49,6 +49,7 @@ object Notifier {
   val tailFSShares: StateFlow<Map<String, String>?> = MutableStateFlow(null)
   val browseToURL: StateFlow<String?> = MutableStateFlow(null)
   val loginFinished: StateFlow<String?> = MutableStateFlow(null)
+  val errMessage: StateFlow<String?> = MutableStateFlow(null)
   val version: StateFlow<String?> = MutableStateFlow(null)
   val health: StateFlow<Health.State?> = MutableStateFlow(null)
 
@@ -112,6 +113,7 @@ object Notifier {
                   notify.TailFSShares?.let(tailFSShares::set)
                   notify.BrowseToURL?.let(browseToURL::set)
                   notify.LoginFinished?.let { loginFinished.set(it.property) }
+                  notify.ErrMessage?.let(errMessage::set)
                   notify.Version?.let(version::set)
                   notify.OutgoingFiles?.let(outgoingFiles::set)
                   notify.FilesWaiting?.let(filesWaiting::set)

@@ -46,4 +46,34 @@ class TailwareRestoreAndLoginTest {
     assertFalse(shouldAcceptLoginUrl(true, oldUrl, oldFingerprint))
     assertTrue(shouldAcceptLoginUrl(true, newUrl, oldFingerprint))
   }
+
+  @Test
+  fun rapidOnOffOnAcceptsOnlyTheLastCommand() {
+    val finalState = DesiredVpnState(enabled = true, generation = 3L)
+
+    assertFalse(
+        isCurrentVpnCommand(
+            commandGeneration = 1L,
+            requestedEnabled = true,
+            currentState = finalState,
+        ))
+    assertFalse(
+        isCurrentVpnCommand(
+            commandGeneration = 2L,
+            requestedEnabled = false,
+            currentState = finalState,
+        ))
+    assertTrue(
+        isCurrentVpnCommand(
+            commandGeneration = 3L,
+            requestedEnabled = true,
+            currentState = finalState,
+        ))
+  }
+
+  @Test
+  fun technicalRestartNeverTurnsAnExplicitlyDisabledVpnOn() {
+    assertFalse(shouldDispatchVpnRestart(desiredVpnEnabled = false))
+    assertTrue(shouldDispatchVpnRestart(desiredVpnEnabled = true))
+  }
 }

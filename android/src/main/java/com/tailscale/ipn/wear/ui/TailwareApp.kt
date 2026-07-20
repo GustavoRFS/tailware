@@ -35,7 +35,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,12 +48,16 @@ import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
 import com.tailscale.ipn.BuildConfig
 import com.tailscale.ipn.R
+import com.tailscale.ipn.wear.LoginMethod
+import com.tailscale.ipn.wear.LoginPresentation
+import com.tailscale.ipn.wear.PhoneLoginStatus
 import com.tailscale.ipn.wear.PingStatus
 import com.tailscale.ipn.wear.TailwareLanguage
 import com.tailscale.ipn.wear.TailwareViewModel
 import com.tailscale.ipn.wear.TileQuickAction
 import com.tailscale.ipn.wear.VpnAuthorization
 import com.tailscale.ipn.wear.WearAccountState
+import com.tailscale.ipn.wear.WearErrorOrigin
 import com.tailscale.ipn.wear.WearHealthSeverity
 import com.tailscale.ipn.wear.WearPeer
 import com.tailscale.ipn.wear.WearTunnelStatus
@@ -64,7 +67,9 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 private object Route {
   const val Gate = "gate"
@@ -89,7 +94,6 @@ private object Route {
 fun TailwareApp(
     viewModel: TailwareViewModel,
     onSetOptionalNotifications: (Boolean) -> Unit,
-    onOpenVpnSettings: () -> Unit,
     onOpenLoginOnPhone: (String) -> Unit,
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -110,12 +114,23 @@ fun TailwareApp(
   }
 
   val currentRoute = backStackEntry?.destination?.route
-  LaunchedEffect(state.accountState, state.loginUrl, currentRoute) {
+  LaunchedEffect(
+      state.accountState,
+      state.loginUrl,
+      state.error?.origin,
+      currentRoute,
+  ) {
     val route = currentRoute ?: return@LaunchedEffect
     val destination =
         when {
           state.accountState == WearAccountState.SignedIn && route in onboardingRoutes ->
               Route.Dashboard
+          state.loginUrl == null &&
+              state.error?.origin == WearErrorOrigin.AuthenticationKey &&
+              route == Route.LoginQr -> Route.AuthKey
+          state.loginUrl == null &&
+              state.error?.origin == WearErrorOrigin.CustomServer &&
+              route == Route.LoginQr -> Route.ControlUrl
           state.accountState != WearAccountState.SignedIn &&
               state.loginUrl != null &&
               route != Route.LoginQr -> Route.LoginQr
@@ -126,11 +141,22 @@ fun TailwareApp(
           else -> null
         }
     if (destination != null) {
-      navController.navigate(destination) {
-        popUpTo(accountRootRoute) { inclusive = true }
-        launchSingleTop = true
+      when (destination) {
+        Route.LoginQr -> navController.navigate(destination) { launchSingleTop = true }
+        Route.AuthKey,
+        Route.ControlUrl -> {
+          if (!navController.popBackStack(destination, inclusive = false)) {
+            navController.navigate(destination) { launchSingleTop = true }
+          }
+        }
+        else -> {
+          navController.navigate(destination) {
+            popUpTo(accountRootRoute) { inclusive = true }
+            launchSingleTop = true
+          }
+          accountRootRoute = destination
+        }
       }
-      accountRootRoute = destination
     }
   }
 
@@ -149,9 +175,15 @@ fun TailwareApp(
     composable(Route.LoginMethods) {
       LoginMethodsScreen(
           state = state,
-          onTailscaleLogin = {
-            viewModel.startInteractiveLogin()
-            navController.navigate(Route.LoginQr)
+          onPhoneLogin = {
+            if (viewModel.startInteractiveLogin(LoginPresentation.Phone)) {
+              navController.navigate(Route.LoginQr)
+            }
+          },
+          onQrLogin = {
+            if (viewModel.startInteractiveLogin(LoginPresentation.QrCode)) {
+              navController.navigate(Route.LoginQr)
+            }
           },
           onAuthKey = { navController.navigate(Route.AuthKey) },
           onControlUrl = { navController.navigate(Route.ControlUrl) },
@@ -159,6 +191,14 @@ fun TailwareApp(
       )
     }
     composable(Route.LoginQr) {
+      LaunchedEffect(state.loginPresentation, state.loginUrl, state.phoneLoginStatus) {
+        val url = state.loginUrl
+        if (state.loginPresentation == LoginPresentation.Phone &&
+            url != null &&
+            state.phoneLoginStatus == PhoneLoginStatus.Idle) {
+          onOpenLoginOnPhone(url)
+        }
+      }
       val latestAccountState by rememberUpdatedState(state.accountState)
       val explicitCancellationRequested = remember { mutableStateOf(false) }
       DisposableEffect(Unit) {
@@ -172,8 +212,9 @@ fun TailwareApp(
       }
       LoginQrScreen(
           state = state,
-          onRetry = viewModel::startInteractiveLogin,
+          onRetry = { viewModel.regenerateInteractiveLogin(state.loginPresentation) },
           onOpenOnPhone = onOpenLoginOnPhone,
+          onResetPhoneError = viewModel::clearPhoneLoginError,
           onCancel = {
             explicitCancellationRequested.value = true
             viewModel.cancelInteractiveLogin()
@@ -183,6 +224,10 @@ fun TailwareApp(
       )
     }
     composable(Route.AuthKey) {
+      LaunchedEffect(Unit) { viewModel.prepareLoginMethod(LoginMethod.AuthenticationKey) }
+      DisposableEffect(Unit) {
+        onDispose { viewModel.cancelLoginIfActive(LoginMethod.AuthenticationKey) }
+      }
       AuthKeyScreen(
           state = state,
           onLogin = viewModel::startAuthKeyLogin,
@@ -190,12 +235,18 @@ fun TailwareApp(
       )
     }
     composable(Route.ControlUrl) {
+      val latestLoginUrl by rememberUpdatedState(state.loginUrl)
+      LaunchedEffect(Unit) { viewModel.prepareLoginMethod(LoginMethod.CustomServer) }
+      DisposableEffect(Unit) {
+        onDispose {
+          if (latestLoginUrl == null) {
+            viewModel.cancelLoginIfActive(LoginMethod.CustomServer)
+          }
+        }
+      }
       ControlUrlScreen(
           state = state,
-          onLogin = {
-            viewModel.startCustomControlLogin(it)
-            navController.navigate(Route.LoginQr)
-          },
+          onLogin = viewModel::startCustomControlLogin,
           onDismissError = viewModel::clearError,
       )
     }
@@ -203,16 +254,9 @@ fun TailwareApp(
       DashboardScreen(
           state = state,
           onConnectionClick = {
-            when (state.tunnelStatus) {
-              WearTunnelStatus.Connected,
-              WearTunnelStatus.Connecting -> viewModel.disconnect()
-              WearTunnelStatus.Disconnecting -> Unit
-              WearTunnelStatus.Disconnected,
-              WearTunnelStatus.Unknown ->
-                  when (state.vpnAuthorization) {
-                    VpnAuthorization.Granted -> viewModel.connect()
-                    VpnAuthorization.AdbRequired -> navController.navigate(Route.VpnSetup)
-                  }
+            when (state.vpnAuthorization) {
+              VpnAuthorization.Granted -> viewModel.toggleConnection()
+              VpnAuthorization.AdbRequired -> navController.navigate(Route.VpnSetup)
             }
           },
           onDevices = { navController.navigate(Route.Devices) },
@@ -260,22 +304,33 @@ fun TailwareApp(
           onSetNotifications = onSetOptionalNotifications,
           onLanguage = { navController.navigate(Route.Language) },
           onTile = { navController.navigate(Route.Tile) },
-          onVpnSetup = { navController.navigate(Route.VpnSetup) },
           onAbout = { navController.navigate(Route.About) },
-          onOpenVpnSettings = onOpenVpnSettings,
           onLogout = viewModel::logoutAccount,
           onDismissError = viewModel::clearError,
       )
     }
     composable(Route.Language) { LanguageScreen(state = state, onSelect = viewModel::setLanguage) }
     composable(Route.Tile) {
-      TileSettingsScreen(state = state, onSelect = viewModel::setTileQuickAction)
+      TileSettingsScreen(
+          state = state,
+          onSelect = viewModel::setTileQuickAction,
+          onShowIp = viewModel::setTileShowIp,
+          onShowExitNode = viewModel::setTileShowExitNode,
+          onShowMagicDns = viewModel::setTileShowMagicDns,
+      )
     }
     composable(Route.VpnSetup) {
+      LaunchedEffect(state.vpnAuthorization) {
+        while (state.vpnAuthorization == VpnAuthorization.AdbRequired) {
+          withContext(Dispatchers.IO) {
+            viewModel.refreshVpnAuthorization(com.tailscale.ipn.App.get())
+          }
+          delay(2_000L)
+        }
+      }
       VpnSetupScreen(
           state = state,
           onRetry = { viewModel.refreshVpnAuthorization(com.tailscale.ipn.App.get()) },
-          onOpenVpnSettings = onOpenVpnSettings,
           onDismissError = viewModel::clearError,
       )
     }
@@ -361,7 +416,8 @@ private fun WelcomeScreen(state: WearUiState, onConnectAccount: () -> Unit) {
 @Composable
 private fun LoginMethodsScreen(
     state: WearUiState,
-    onTailscaleLogin: () -> Unit,
+    onPhoneLogin: () -> Unit,
+    onQrLogin: () -> Unit,
     onAuthKey: () -> Unit,
     onControlUrl: () -> Unit,
     onDismissError: () -> Unit,
@@ -378,17 +434,46 @@ private fun LoginMethodsScreen(
         errorItem(state, onDismissError)
         item {
           TailwareChip(
-              label = "Tailscale",
+              label =
+                  tr(
+                      state,
+                      "Continue on phone",
+                      "Doorgaan op telefoon",
+                      "Continuer sur le téléphone",
+                      "Auf dem Smartphone fortfahren",
+                  ),
               secondary =
                   tr(
                       state,
-                      "Scan a secure QR code",
-                      "Scan een beveiligde QR-code",
-                      "Scanner un code QR sécurisé",
-                      "Sicheren QR-Code scannen",
+                      "Fastest secure sign-in method",
+                      "Snelste veilige aanmeldmethode",
+                      "Méthode de connexion sécurisée la plus rapide",
+                      "Schnellste sichere Anmeldemethode",
                   ),
-              onClick = onTailscaleLogin,
+              onClick = onPhoneLogin,
               accent = true,
+              enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
+          )
+        }
+        item {
+          TailwareChip(
+              label =
+                  tr(
+                      state,
+                      "QR code or sign-in code",
+                      "QR-code of aanmeldcode",
+                      "Code QR ou code de connexion",
+                      "QR-Code oder Anmeldecode",
+                  ),
+              secondary =
+                  tr(
+                      state,
+                      "Scan it or enter the code on another device",
+                      "Scan of voer de code in op een ander apparaat",
+                      "Scannez ou saisissez le code sur un autre appareil",
+                      "Scannen oder Code auf anderem Gerät eingeben",
+                  ),
+              onClick = onQrLogin,
               enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
           )
         }
@@ -437,13 +522,23 @@ private fun LoginQrScreen(
     state: WearUiState,
     onRetry: () -> Unit,
     onOpenOnPhone: (String) -> Unit,
+    onResetPhoneError: () -> Unit,
     onCancel: () -> Unit,
     onDismissError: () -> Unit,
 ) {
   val qr = rememberQrCode(state.loginUrl)
   val small = LocalConfiguration.current.screenWidthDp < 210
   TailwareListScreen(title = tr(state, "Sign in", "Aanmelden", "Connexion", "Anmelden")) {
-    errorItem(state, onDismissError)
+    errorItem(
+        state,
+        onDismissError,
+        origins =
+            setOf(
+                WearErrorOrigin.InteractiveLogin,
+                WearErrorOrigin.CustomServer,
+                WearErrorOrigin.Global,
+            ),
+    )
     when {
       state.accountState == WearAccountState.NeedsMachineAuthorization -> {
         item {
@@ -469,6 +564,103 @@ private fun LoginQrScreen(
         }
       }
       qr != null -> {
+        item {
+          TailwareChip(
+              label =
+                  when (state.phoneLoginStatus) {
+                    PhoneLoginStatus.Opening ->
+                        tr(
+                            state,
+                            "Opening on phone…",
+                            "Openen op telefoon…",
+                            "Ouverture sur le téléphone…",
+                            "Wird auf dem Smartphone geöffnet…",
+                        )
+                    PhoneLoginStatus.Sent ->
+                        tr(
+                            state,
+                            "Sent to phone",
+                            "Naar telefoon gestuurd",
+                            "Envoyé au téléphone",
+                            "An Smartphone gesendet",
+                        )
+                    PhoneLoginStatus.Idle,
+                    PhoneLoginStatus.Failed ->
+                        tr(
+                            state,
+                            "Continue on phone",
+                            "Doorgaan op telefoon",
+                            "Continuer sur le téléphone",
+                            "Auf dem Smartphone fortfahren",
+                        )
+                  },
+              secondary =
+                  when (state.phoneLoginStatus) {
+                    PhoneLoginStatus.Opening ->
+                        tr(
+                            state,
+                            "Contacting the paired phone",
+                            "Gekoppelde telefoon contacteren",
+                            "Connexion au téléphone associé",
+                            "Gekoppeltes Smartphone wird kontaktiert",
+                        )
+                    PhoneLoginStatus.Sent ->
+                        tr(
+                            state,
+                            "Finish sign-in on the paired phone",
+                            "Rond aanmelden af op de gekoppelde telefoon",
+                            "Terminez la connexion sur le téléphone associé",
+                            "Anmeldung auf dem Smartphone abschließen",
+                        )
+                    PhoneLoginStatus.Failed ->
+                        tr(
+                            state,
+                            "Try again or use the QR code below",
+                            "Probeer opnieuw of gebruik de QR-code hieronder",
+                            "Réessayez ou utilisez le code QR ci-dessous",
+                            "Erneut versuchen oder QR-Code unten verwenden",
+                        )
+                    PhoneLoginStatus.Idle ->
+                        tr(
+                            state,
+                            "Fastest secure sign-in method",
+                            "Snelste veilige aanmeldmethode",
+                            "Méthode de connexion sécurisée la plus rapide",
+                            "Schnellste sichere Anmeldemethode",
+                        )
+                  },
+              onClick = {
+                onResetPhoneError()
+                state.loginUrl?.let(onOpenOnPhone)
+              },
+              enabled = state.phoneLoginStatus != PhoneLoginStatus.Opening,
+              accent = true,
+          )
+        }
+        if (state.phoneLoginStatus == PhoneLoginStatus.Opening) {
+          item {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                indicatorColor = TailwarePalette.Signal,
+            )
+          }
+        }
+        state.phoneLoginError?.let { message ->
+          item {
+            TailwareInfo(
+                label =
+                    tr(
+                        state,
+                        "Phone unavailable",
+                        "Telefoon niet beschikbaar",
+                        "Téléphone indisponible",
+                        "Smartphone nicht verfügbar",
+                    ),
+                value = message,
+                valueColor = TailwarePalette.Warning,
+            )
+          }
+        }
         item {
           Box(
               modifier =
@@ -509,37 +701,6 @@ private fun LoginQrScreen(
           }
         }
         item {
-          TailwareChip(
-              label =
-                  tr(
-                      state,
-                      "Continue on phone",
-                      "Doorgaan op telefoon",
-                      "Continuer sur le téléphone",
-                      "Auf dem Smartphone fortfahren",
-                  ),
-              secondary =
-                  if (state.phoneLoginSent)
-                      tr(
-                          state,
-                          "Sign-in page sent to the paired phone",
-                          "Aanmeldpagina naar de gekoppelde telefoon gestuurd",
-                          "Page de connexion envoyée au téléphone associé",
-                          "Anmeldeseite an das gekoppelte Smartphone gesendet",
-                      )
-                  else
-                      tr(
-                          state,
-                          "Open this secure sign-in link remotely",
-                          "Open deze beveiligde link op afstand",
-                          "Ouvrir ce lien sécurisé à distance",
-                          "Sicheren Link aus der Ferne öffnen",
-                      ),
-              onClick = { state.loginUrl?.let(onOpenOnPhone) },
-              accent = true,
-          )
-        }
-        item {
           Text(
               text =
                   tr(
@@ -554,26 +715,28 @@ private fun LoginQrScreen(
               maxLines = 3,
           )
         }
-        item {
-          TailwareChip(
-              label =
-                  tr(
-                      state,
-                      "Generate new code",
-                      "Nieuwe code maken",
-                      "Générer un nouveau code",
-                      "Neuen Code erzeugen",
-                  ),
-              secondary =
-                  tr(
-                      state,
-                      "The previous link will no longer be shown",
-                      "De vorige link wordt niet meer getoond",
-                      "L’ancien lien ne sera plus affiché",
-                      "Der vorige Link wird nicht mehr angezeigt",
-                  ),
-              onClick = onRetry,
-          )
+        if (state.activeLoginMethod == LoginMethod.Tailscale) {
+          item {
+            TailwareChip(
+                label =
+                    tr(
+                        state,
+                        "Generate new code",
+                        "Nieuwe code maken",
+                        "Générer un nouveau code",
+                        "Neuen Code erzeugen",
+                    ),
+                secondary =
+                    tr(
+                        state,
+                        "The previous link will no longer be shown",
+                        "De vorige link wordt niet meer getoond",
+                        "L’ancien lien ne sera plus affiché",
+                        "Der vorige Link wird nicht mehr angezeigt",
+                    ),
+                onClick = onRetry,
+            )
+          }
         }
       }
       else -> {
@@ -627,7 +790,7 @@ private fun LoginQrScreen(
 @Composable
 private fun AuthKeyScreen(
     state: WearUiState,
-    onLogin: (String) -> Unit,
+    onLogin: (String) -> Boolean,
     onDismissError: () -> Unit,
 ) {
   // Authentication keys are secrets: never place them in a saveable state Bundle.
@@ -641,15 +804,27 @@ private fun AuthKeyScreen(
               "Clé d’authentification",
               "Authentifizierungsschlüssel",
           )) {
-        errorItem(state, onDismissError)
+        errorItem(
+            state,
+            onDismissError,
+            origins = setOf(WearErrorOrigin.AuthenticationKey, WearErrorOrigin.Global),
+        )
         item {
           WearTextField(
               value = key,
               onValueChange = { key = it },
               label = "tskey-auth-…",
-              keyboardType = KeyboardType.Password,
-              password = true,
+              keyboardType = KeyboardType.Ascii,
+              mono = true,
           )
+        }
+        if (state.busyAction == com.tailscale.ipn.wear.WearAction.Login) {
+          item {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                indicatorColor = TailwarePalette.Signal,
+            )
+          }
         }
         item {
           TailwareChip(
@@ -657,17 +832,14 @@ private fun AuthKeyScreen(
               secondary =
                   tr(
                       state,
-                      "Tailware clears this field after use",
-                      "Tailware wist dit veld na gebruik",
-                      "Tailware efface ce champ après utilisation",
-                      "Tailware löscht dieses Feld nach der Verwendung",
+                      "The key remains visible while it is checked",
+                      "De sleutel blijft zichtbaar tijdens de controle",
+                      "La clé reste visible pendant la vérification",
+                      "Der Schlüssel bleibt während der Prüfung sichtbar",
                   ),
-              onClick = {
-                val submittedKey = key
-                key = ""
-                onLogin(submittedKey)
-              },
-              enabled = key.isNotBlank(),
+              onClick = { onLogin(key) },
+              enabled =
+                  key.isNotBlank() && state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
               accent = true,
           )
         }
@@ -677,12 +849,24 @@ private fun AuthKeyScreen(
 @Composable
 private fun ControlUrlScreen(
     state: WearUiState,
-    onLogin: (String) -> Unit,
+    onLogin: (String) -> Boolean,
     onDismissError: () -> Unit,
 ) {
   var url by rememberSaveable { mutableStateOf("https://") }
   TailwareListScreen(title = "Headscale") {
-    errorItem(state, onDismissError)
+    errorItem(
+        state,
+        onDismissError,
+        origins = setOf(WearErrorOrigin.CustomServer, WearErrorOrigin.Global),
+    )
+    if (state.busyAction == com.tailscale.ipn.wear.WearAction.Login) {
+      item {
+        CircularProgressIndicator(
+            modifier = Modifier.size(24.dp),
+            indicatorColor = TailwarePalette.Signal,
+        )
+      }
+    }
     item {
       WearTextField(
           value = url,
@@ -702,7 +886,9 @@ private fun ControlUrlScreen(
                   "Server verbinden",
               ),
           onClick = { onLogin(url) },
-          enabled = url.length > "https://".length,
+          enabled =
+              url.length > "https://".length &&
+                  state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
           accent = true,
       )
     }
@@ -745,7 +931,10 @@ private fun DashboardScreen(
       ConnectionOrb(
           status = state.tunnelStatus,
           onClick = onConnectionClick,
-          enabled = state.busyAction == null,
+          enabled =
+              state.accountState == WearAccountState.SignedIn &&
+                  state.busyAction != com.tailscale.ipn.wear.WearAction.Login &&
+                  state.busyAction != com.tailscale.ipn.wear.WearAction.Logout,
           contentDescription =
               tr(
                   state,
@@ -756,8 +945,7 @@ private fun DashboardScreen(
               ),
           stateDescription = statusText,
           actionLabel =
-              if (state.tunnelStatus == WearTunnelStatus.Connected ||
-                  state.tunnelStatus == WearTunnelStatus.Connecting)
+              if (state.desiredVpnEnabled)
                   tr(state, "Disconnect", "Verbreken", "Déconnecter", "Trennen")
               else tr(state, "Connect", "Verbinden", "Connecter", "Verbinden"),
       )
@@ -1022,60 +1210,67 @@ private fun DeviceScreen(
           item { TailwareInfo(label = "MAGICDNS", value = peer.dnsName, mono = true) }
         }
         peer.os?.takeIf { it.isNotBlank() }?.let { item { TailwareInfo(label = "OS", value = it) } }
-        item {
-          TailwareChip(
-              label =
-                  tr(state, "Ping device", "Apparaat pingen", "Tester l’appareil", "Gerät pingen"),
-              secondary =
-                  tr(
-                      state,
-                      "Measure tailnet latency",
-                      "Meet de tailnet-latentie",
-                      "Mesurer la latence du tailnet",
-                      "Tailnet-Latenz messen",
-                  ),
-              onClick = onPing,
-              enabled = pingResult?.status != PingStatus.Running,
-              accent = true,
-          )
-        }
-        when (pingResult?.status ?: PingStatus.Idle) {
-          PingStatus.Running ->
-              item {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(30.dp),
-                    indicatorColor = TailwarePalette.Signal,
-                )
-              }
-          PingStatus.Success ->
-              item {
-                TailwareInfo(
-                    label = "PING",
-                    value =
-                        String.format(
-                            Locale.getDefault(),
-                            "%.1f ms",
-                            pingResult?.latencyMillis ?: 0.0,
-                        ),
-                    mono = true,
-                    valueColor = TailwarePalette.Signal,
-                )
-              }
-          PingStatus.Failed ->
-              item {
-                TailwareChip(
-                    label =
-                        tr(
-                            state,
-                            "Ping failed",
-                            "Ping mislukt",
-                            "Échec du ping",
-                            "Ping fehlgeschlagen"),
-                    secondary = pingResult?.error,
-                    onClick = onClearPing,
-                )
-              }
-          PingStatus.Idle -> Unit
+        if (!peer.isSelf) {
+          item {
+            TailwareChip(
+                label =
+                    tr(
+                        state,
+                        "Ping device",
+                        "Apparaat pingen",
+                        "Tester l’appareil",
+                        "Gerät pingen"),
+                secondary =
+                    tr(
+                        state,
+                        "Measure tailnet latency",
+                        "Meet de tailnet-latentie",
+                        "Mesurer la latence du tailnet",
+                        "Tailnet-Latenz messen",
+                    ),
+                onClick = onPing,
+                enabled = pingResult?.status != PingStatus.Running,
+                accent = true,
+            )
+          }
+          when (pingResult?.status ?: PingStatus.Idle) {
+            PingStatus.Running ->
+                item {
+                  CircularProgressIndicator(
+                      modifier = Modifier.size(30.dp),
+                      indicatorColor = TailwarePalette.Signal,
+                  )
+                }
+            PingStatus.Success ->
+                item {
+                  TailwareInfo(
+                      label = "PING",
+                      value =
+                          String.format(
+                              Locale.getDefault(),
+                              "%.1f ms",
+                              pingResult?.latencyMillis ?: 0.0,
+                          ),
+                      mono = true,
+                      valueColor = TailwarePalette.Signal,
+                  )
+                }
+            PingStatus.Failed ->
+                item {
+                  TailwareChip(
+                      label =
+                          tr(
+                              state,
+                              "Ping failed",
+                              "Ping mislukt",
+                              "Échec du ping",
+                              "Ping fehlgeschlagen"),
+                      secondary = pingResult?.error,
+                      onClick = onClearPing,
+                  )
+                }
+            PingStatus.Idle -> Unit
+          }
         }
       }
 }
@@ -1177,9 +1372,7 @@ private fun SettingsScreen(
     onSetNotifications: (Boolean) -> Unit,
     onLanguage: () -> Unit,
     onTile: () -> Unit,
-    onVpnSetup: () -> Unit,
     onAbout: () -> Unit,
-    onOpenVpnSettings: () -> Unit,
     onLogout: () -> Unit,
     onDismissError: () -> Unit,
 ) {
@@ -1208,6 +1401,62 @@ private fun SettingsScreen(
               iconRes = R.drawable.globe,
           )
         }
+        item {
+          TailwareToggle(
+              label = "Tailscale DNS",
+              secondary = "MagicDNS",
+              checked =
+                  state.accountState == WearAccountState.SignedIn && state.tailscaleDnsEnabled,
+              onCheckedChange = { onToggleDns() },
+              enabled = state.accountState == WearAccountState.SignedIn && state.busyAction == null,
+          )
+        }
+        item {
+          TailwareToggle(
+              label =
+                  tr(
+                      state,
+                      "Optional notifications",
+                      "Optionele meldingen",
+                      "Notifications facultatives",
+                      "Optionale Benachrichtigungen",
+                  ),
+              secondary =
+                  if (state.optionalNotificationsBlockedBySystem)
+                      tr(
+                          state,
+                          "Blocked in Android settings",
+                          "Geblokkeerd in Android-instellingen",
+                          "Bloqué dans les paramètres Android",
+                          "In Android-Einstellungen blockiert",
+                      )
+                  else
+                      tr(
+                          state,
+                          "System permission is one-time; this controls Tailware alerts",
+                          "Systeemtoestemming is eenmalig; dit regelt Tailware-meldingen",
+                          "L’autorisation système est unique; ceci règle les alertes Tailware",
+                          "Systemfreigabe ist einmalig; dies steuert Tailware-Meldungen",
+                      ),
+              checked = state.optionalNotificationsEnabled,
+              onCheckedChange = onSetNotifications,
+          )
+        }
+        item {
+          TailwareChip(
+              label =
+                  tr(state, "Tailware Tile", "Tailware-tegel", "Tile Tailware", "Tailware-Tile"),
+              secondary =
+                  tr(
+                      state,
+                      "Status and quick action",
+                      "Status en snelle actie",
+                      "État et action rapide",
+                      "Status und Schnellaktion",
+                  ),
+              onClick = onTile,
+          )
+        }
         state.profileDisplayName?.let {
           item {
             TailwareInfo(
@@ -1233,100 +1482,6 @@ private fun SettingsScreen(
                     else TailwarePalette.Ice,
             )
           }
-        }
-        item {
-          TailwareToggle(
-              label = "Tailscale DNS",
-              secondary = "MagicDNS",
-              checked =
-                  state.accountState == WearAccountState.SignedIn && state.tailscaleDnsEnabled,
-              onCheckedChange = { onToggleDns() },
-              enabled = state.accountState == WearAccountState.SignedIn && state.busyAction == null,
-          )
-        }
-        item {
-          TailwareToggle(
-              label =
-                  tr(
-                      state,
-                      "Optional notifications",
-                      "Optionele meldingen",
-                      "Notifications facultatives",
-                      "Optionale Benachrichtigungen",
-                  ),
-              secondary =
-                  tr(
-                      state,
-                      "Android still shows the required VPN status",
-                      "Android toont nog steeds de verplichte VPN-status",
-                      "Android affiche toujours l’état VPN requis",
-                      "Android zeigt weiterhin den nötigen VPN-Status",
-                  ),
-              checked = state.optionalNotificationsEnabled,
-              onCheckedChange = onSetNotifications,
-          )
-        }
-        item {
-          TailwareChip(
-              label =
-                  tr(state, "Tailware Tile", "Tailware-tegel", "Tile Tailware", "Tailware-Tile"),
-              secondary =
-                  tr(
-                      state,
-                      "Status and quick action",
-                      "Status en snelle actie",
-                      "État et action rapide",
-                      "Status und Schnellaktion",
-                  ),
-              onClick = onTile,
-          )
-        }
-        item {
-          TailwareChip(
-              label =
-                  tr(
-                      state,
-                      "VPN authorization",
-                      "VPN-toestemming",
-                      "Autorisation VPN",
-                      "VPN-Autorisierung",
-                  ),
-              secondary =
-                  when (state.vpnAuthorization) {
-                    VpnAuthorization.Granted ->
-                        tr(state, "Authorized", "Toegestaan", "Autorisé", "Autorisiert")
-                    VpnAuthorization.AdbRequired -> "ADB setup"
-                  },
-              onClick = onVpnSetup,
-          )
-        }
-        item {
-          TailwareChip(
-              label = "Always-on VPN",
-              secondary =
-                  tr(
-                      state,
-                      "Open Android VPN settings",
-                      "Open Android VPN-instellingen",
-                      "Ouvrir les paramètres VPN Android",
-                      "Android-VPN-Einstellungen öffnen",
-                  ),
-              onClick = onOpenVpnSettings,
-          )
-        }
-        item {
-          TailwareChip(
-              label = tr(state, "About Tailware", "Over Tailware", "À propos", "Über Tailware"),
-              secondary =
-                  tr(
-                      state,
-                      "Version, source and licenses",
-                      "Versie, broncode en licenties",
-                      "Version, source et licences",
-                      "Version, Quellcode und Lizenzen",
-                  ),
-              onClick = onAbout,
-          )
         }
         item {
           TailwareChip(
@@ -1360,9 +1515,30 @@ private fun SettingsScreen(
                               "Noch einmal tippen, um sich auf dieser Uhr abzumelden",
                           )
                   else state.profileDisplayName,
-              onClick = { if (confirmLogout) onLogout() else confirmLogout = true },
+              onClick = {
+                if (confirmLogout) {
+                  confirmLogout = false
+                  onLogout()
+                } else {
+                  confirmLogout = true
+                }
+              },
               enabled = state.accountState == WearAccountState.SignedIn && state.busyAction == null,
               accent = confirmLogout,
+          )
+        }
+        item {
+          TailwareChip(
+              label = tr(state, "About Tailware", "Over Tailware", "À propos", "Über Tailware"),
+              secondary =
+                  tr(
+                      state,
+                      "Version, source and licenses",
+                      "Versie, broncode en licenties",
+                      "Version, source et licences",
+                      "Version, Quellcode und Lizenzen",
+                  ),
+              onClick = onAbout,
           )
         }
       }
@@ -1459,7 +1635,13 @@ private fun LanguageScreen(state: WearUiState, onSelect: (TailwareLanguage) -> U
 }
 
 @Composable
-private fun TileSettingsScreen(state: WearUiState, onSelect: (TileQuickAction) -> Unit) {
+private fun TileSettingsScreen(
+    state: WearUiState,
+    onSelect: (TileQuickAction) -> Unit,
+    onShowIp: (Boolean) -> Unit,
+    onShowExitNode: (Boolean) -> Unit,
+    onShowMagicDns: (Boolean) -> Unit,
+) {
   TailwareListScreen(
       title = tr(state, "Tailware Tile", "Tailware-tegel", "Tile Tailware", "Tailware-Tile")) {
         item {
@@ -1467,10 +1649,10 @@ private fun TileSettingsScreen(state: WearUiState, onSelect: (TileQuickAction) -
               text =
                   tr(
                       state,
-                      "Add the Tile from your watch’s Tile editor. It shows connection status and your Tailware IP.",
-                      "Voeg de tegel toe via de tegel-editor van je horloge. Hij toont de verbinding en je Tailware-IP.",
-                      "Ajoutez le Tile depuis l’éditeur de la montre. Il affiche la connexion et votre IP Tailware.",
-                      "Füge das Tile im Tile-Editor der Uhr hinzu. Es zeigt Verbindung und Tailware-IP.",
+                      "Choose what the compact Tile shows and what a tap does.",
+                      "Kies wat de compacte tegel toont en wat een tik doet.",
+                      "Choisissez les détails du Tile et l’action au toucher.",
+                      "Wähle die Tile-Details und die Aktion beim Tippen.",
                   ),
               color = TailwarePalette.Muted,
               textAlign = TextAlign.Center,
@@ -1480,15 +1662,14 @@ private fun TileSettingsScreen(state: WearUiState, onSelect: (TileQuickAction) -
         item {
           TailwareChip(
               label =
-                  tr(
-                      state,
-                      "Tap toggles connection",
-                      "Tik schakelt verbinding",
-                      "Toucher bascule la connexion",
-                      "Tippen schaltet Verbindung",
-                  ),
-              secondary =
-                  if (state.tileQuickAction == TileQuickAction.ToggleConnection) "✓" else null,
+                  (if (state.tileQuickAction == TileQuickAction.ToggleConnection) "✓ " else "") +
+                      tr(
+                          state,
+                          "Tap toggles connection",
+                          "Tik schakelt verbinding",
+                          "Toucher bascule la connexion",
+                          "Tippen schaltet Verbindung",
+                      ),
               onClick = { onSelect(TileQuickAction.ToggleConnection) },
               accent = state.tileQuickAction == TileQuickAction.ToggleConnection,
           )
@@ -1496,16 +1677,44 @@ private fun TileSettingsScreen(state: WearUiState, onSelect: (TileQuickAction) -
         item {
           TailwareChip(
               label =
-                  tr(
-                      state,
-                      "Tap opens Tailware",
-                      "Tik opent Tailware",
-                      "Toucher ouvre Tailware",
-                      "Tippen öffnet Tailware",
-                  ),
-              secondary = if (state.tileQuickAction == TileQuickAction.OpenApp) "✓" else null,
+                  (if (state.tileQuickAction == TileQuickAction.OpenApp) "✓ " else "") +
+                      tr(
+                          state,
+                          "Tap opens Tailware",
+                          "Tik opent Tailware",
+                          "Toucher ouvre Tailware",
+                          "Tippen öffnet Tailware",
+                      ),
               onClick = { onSelect(TileQuickAction.OpenApp) },
               accent = state.tileQuickAction == TileQuickAction.OpenApp,
+          )
+        }
+        item {
+          TailwareToggle(
+              label = "Tailscale IP",
+              checked = state.tileShowIp,
+              onCheckedChange = onShowIp,
+          )
+        }
+        item {
+          TailwareToggle(
+              label =
+                  tr(
+                      state,
+                      "Exit node",
+                      "Exit-node",
+                      "Nœud de sortie",
+                      "Exit-Node",
+                  ),
+              checked = state.tileShowExitNode,
+              onCheckedChange = onShowExitNode,
+          )
+        }
+        item {
+          TailwareToggle(
+              label = "MagicDNS",
+              checked = state.tileShowMagicDns,
+              onCheckedChange = onShowMagicDns,
           )
         }
       }
@@ -1515,7 +1724,6 @@ private fun TileSettingsScreen(state: WearUiState, onSelect: (TileQuickAction) -
 private fun VpnSetupScreen(
     state: WearUiState,
     onRetry: () -> Unit,
-    onOpenVpnSettings: () -> Unit,
     onDismissError: () -> Unit,
 ) {
   TailwareListScreen(
@@ -1622,20 +1830,6 @@ private fun VpnSetupScreen(
             )
           }
         }
-        item {
-          TailwareChip(
-              label = "Always-on VPN",
-              secondary =
-                  tr(
-                      state,
-                      "Open Android VPN settings",
-                      "Open Android VPN-instellingen",
-                      "Ouvrir les paramètres VPN Android",
-                      "Android-VPN-Einstellungen öffnen",
-                  ),
-              onClick = onOpenVpnSettings,
-          )
-        }
       }
 }
 
@@ -1645,7 +1839,7 @@ private fun WearTextField(
     onValueChange: (String) -> Unit,
     label: String,
     keyboardType: KeyboardType,
-    password: Boolean = false,
+    mono: Boolean = false,
 ) {
   OutlinedTextField(
       value = value,
@@ -1657,12 +1851,10 @@ private fun WearTextField(
           androidx.compose.ui.text.TextStyle(
               color = TailwarePalette.Ice,
               fontSize = 12.sp,
-              fontFamily = if (password) FontFamily.Monospace else FontFamily.Default,
+              fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
           ),
       keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-      visualTransformation =
-          if (password) PasswordVisualTransformation()
-          else androidx.compose.ui.text.input.VisualTransformation.None,
+      visualTransformation = androidx.compose.ui.text.input.VisualTransformation.None,
       shape = RoundedCornerShape(16.dp),
       colors =
           OutlinedTextFieldDefaults.colors(
@@ -1680,23 +1872,26 @@ private fun WearTextField(
 private fun androidx.wear.compose.foundation.lazy.ScalingLazyListScope.errorItem(
     state: WearUiState,
     onDismiss: () -> Unit,
+    origins: Set<WearErrorOrigin> = setOf(WearErrorOrigin.Global),
 ) {
-  state.error?.let { error ->
-    item {
-      TailwareErrorChip(
-          message = error.message,
-          dismissLabel =
-              tr(
-                  state,
-                  "Tap to dismiss",
-                  "Tik om te sluiten",
-                  "Toucher pour fermer",
-                  "Zum Schließen tippen",
-              ),
-          onDismiss = onDismiss,
-      )
-    }
-  }
+  state.error
+      ?.takeIf { it.origin in origins }
+      ?.let { error ->
+        item {
+          TailwareErrorChip(
+              message = error.message,
+              dismissLabel =
+                  tr(
+                      state,
+                      "Tap to dismiss",
+                      "Tik om te sluiten",
+                      "Toucher pour fermer",
+                      "Zum Schließen tippen",
+                  ),
+              onDismiss = onDismiss,
+          )
+        }
+      }
 }
 
 private fun languageName(language: TailwareLanguage): String =

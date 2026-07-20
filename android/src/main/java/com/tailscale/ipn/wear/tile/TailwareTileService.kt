@@ -4,6 +4,7 @@
 package com.tailscale.ipn.wear.tile
 
 import android.content.Context
+import android.net.VpnService
 import android.util.Log
 import androidx.core.content.edit
 import androidx.wear.tiles.ActionBuilders
@@ -23,7 +24,9 @@ import androidx.wear.tiles.material.Text
 import androidx.wear.tiles.material.Typography
 import androidx.wear.tiles.material.layouts.PrimaryLayout
 import com.google.common.util.concurrent.ListenableFuture
+import com.tailscale.ipn.App
 import com.tailscale.ipn.ui.model.Ipn
+import com.tailscale.ipn.wear.TailwareVpnStateStore
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 
@@ -32,6 +35,9 @@ class TailwareTileService : TileService() {
   override fun onTileRequest(
       requestParams: RequestBuilders.TileRequest
   ): ListenableFuture<TileBuilders.Tile> {
+    if (requestParams.currentState.lastClickableId == CLICK_ID) {
+      handleConnectionTap()
+    }
     val snapshot = readSnapshot()
     val root = tileLayout(requestParams, snapshot)
     val timeline =
@@ -55,15 +61,34 @@ class TailwareTileService : TileService() {
   ): ListenableFuture<ResourceBuilders.Resources> =
       ImmediateFuture(ResourceBuilders.Resources.Builder().setVersion(RESOURCES_VERSION).build())
 
+  private fun handleConnectionTap() {
+    val app = App.get()
+    val vpnAuthorized = runCatching { VpnService.prepare(this) == null }.getOrDefault(false)
+    when (tileToggleDecision(
+        desiredVpnEnabled = TailwareVpnStateStore.desiredVpnEnabled(this),
+        vpnAuthorized = vpnAuthorized,
+        ableToStartVpn = app.isAbleToStartVPN(),
+    )) {
+      TileToggleDecision.Start -> {
+        if (!app.startVPN()) TailwareVpnStateStore.setDesiredVpnEnabled(this, false)
+      }
+      TileToggleDecision.Stop -> app.stopVPN()
+      TileToggleDecision.OpenApp -> Unit
+    }
+  }
+
   private fun readSnapshot(): TileSnapshot {
     // Never initialize the Go/VPN backend merely because Wear OS refreshes the Tile.
     val cached = TailwareTileStateStore.read(this)
+    val desiredVpnEnabled = TailwareVpnStateStore.desiredVpnEnabled(this)
     val tunnelStatus =
-        when {
-          cached.ipnState == Ipn.State.Running && cached.vpnActive -> TileTunnelStatus.Connected
-          cached.ipnState == Ipn.State.Starting -> TileTunnelStatus.Connecting
-          else -> TileTunnelStatus.Disconnected
-        }
+        resolveTileTunnelStatus(
+            ipnState = cached.ipnState,
+            vpnActive = cached.vpnActive,
+            desiredVpnEnabled = desiredVpnEnabled,
+            vpnAuthorized = cached.vpnAuthorized,
+            ableToStartVpn = cached.ableToStartVpn,
+        )
     val preferences = getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
     val language = preferences.getString(KEY_LANGUAGE, LANGUAGE_ENGLISH) ?: LANGUAGE_ENGLISH
     val setupMessage =
@@ -105,9 +130,13 @@ class TailwareTileService : TileService() {
         tunnelStatus = tunnelStatus,
         selfIp = cached.selfIp,
         activeExitNodeName = cached.activeExitNodeName,
+        tailscaleDnsEnabled = cached.tailscaleDnsEnabled,
         underlyingOnline = cached.underlyingOnline,
         setupMessage = setupMessage,
         openApp = quickAction == QUICK_ACTION_OPEN_APP,
+        showIp = preferences.getBoolean(KEY_TILE_SHOW_IP, true),
+        showExitNode = preferences.getBoolean(KEY_TILE_SHOW_EXIT_NODE, true),
+        showMagicDns = preferences.getBoolean(KEY_TILE_SHOW_MAGIC_DNS, true),
         language = language,
     )
   }
@@ -161,37 +190,44 @@ class TailwareTileService : TileService() {
           snapshot.tunnelStatus == TileTunnelStatus.Connecting -> "..."
           else -> "OFF"
         }
+    val networkDetailText =
+        buildTileNetworkDetail(
+            selfIp = snapshot.selfIp,
+            tailscaleDnsEnabled = snapshot.tailscaleDnsEnabled,
+            showIp = snapshot.showIp,
+            showMagicDns = snapshot.showMagicDns,
+        )
     val supportingText =
         snapshot.setupMessage
-            ?: snapshot.selfIp
-            ?: localized(
-                snapshot.language,
-                "Ready to connect",
-                "Klaar om te verbinden",
-                "Prêt à connecter",
-                "Verbindungsbereit",
-            )
+            ?: networkDetailText
+            ?: localized(snapshot.language, "Ready", "Gereed", "Prêt", "Bereit")
     val exitNodeText =
-        snapshot.activeExitNodeName?.takeIf { it.isNotBlank() }?.let { name -> "Exit: $name" }
+        buildTileExitDetail(
+            activeExitNodeName = snapshot.activeExitNodeName,
+            showExitNode = snapshot.showExitNode,
+            offLabel =
+                localized(
+                    snapshot.language,
+                    "Off",
+                    "Uit",
+                    "Désactivé",
+                    "Aus",
+                ),
+        )
     val opensApp = snapshot.openApp || snapshot.setupMessage != null
-    val targetClass =
+    val action =
         if (opensApp) {
-          WEAR_MAIN_ACTIVITY
+          ActionBuilders.LaunchAction.Builder()
+              .setAndroidActivity(
+                  ActionBuilders.AndroidActivity.Builder()
+                      .setPackageName(packageName)
+                      .setClassName(WEAR_MAIN_ACTIVITY)
+                      .build())
+              .build()
         } else {
-          TileActionActivity::class.java.name
+          ActionBuilders.LoadAction.Builder().build()
         }
-    val click =
-        ModifiersBuilders.Clickable.Builder()
-            .setId(CLICK_ID)
-            .setOnClick(
-                ActionBuilders.LaunchAction.Builder()
-                    .setAndroidActivity(
-                        ActionBuilders.AndroidActivity.Builder()
-                            .setPackageName(packageName)
-                            .setClassName(targetClass)
-                            .build())
-                    .build())
-            .build()
+    val click = ModifiersBuilders.Clickable.Builder().setId(CLICK_ID).setOnClick(action).build()
 
     val statusButton =
         Button.Builder(this, click)
@@ -261,9 +297,13 @@ class TailwareTileService : TileService() {
       val tunnelStatus: TileTunnelStatus,
       val selfIp: String?,
       val activeExitNodeName: String?,
+      val tailscaleDnsEnabled: Boolean,
       val underlyingOnline: Boolean?,
       val setupMessage: String?,
       val openApp: Boolean,
+      val showIp: Boolean,
+      val showExitNode: Boolean,
+      val showMagicDns: Boolean,
       val language: String,
   )
 
@@ -295,14 +335,8 @@ class TailwareTileService : TileService() {
         else -> english
       }
 
-  private enum class TileTunnelStatus {
-    Connected,
-    Connecting,
-    Disconnected,
-  }
-
   companion object {
-    private const val RESOURCES_VERSION = "2"
+    private const val RESOURCES_VERSION = "3"
     // State changes request immediate updates; this is only a battery-friendly reconciliation.
     private const val FRESHNESS_INTERVAL_MILLIS = 15 * 60_000L
     private const val CLICK_ID = "tailware_connection"
@@ -325,6 +359,7 @@ internal data class CachedTileState(
     val selfIp: String?,
     val activeExitNodeName: String? = null,
     val underlyingOnline: Boolean? = null,
+    val tailscaleDnsEnabled: Boolean = false,
 )
 
 /**
@@ -366,6 +401,7 @@ internal object TailwareTileStateStore {
         selfIp = preferences.getString(KEY_CACHED_SELF_IP, null),
         activeExitNodeName = preferences.getString(KEY_CACHED_ACTIVE_EXIT_NODE, null),
         underlyingOnline = underlyingOnline,
+        tailscaleDnsEnabled = preferences.getBoolean(KEY_CACHED_TAILSCALE_DNS_ENABLED, false),
     )
   }
 
@@ -378,6 +414,7 @@ internal object TailwareTileStateStore {
       selfIp: String?,
       activeExitNodeName: String? = null,
       underlyingOnline: Boolean? = null,
+      tailscaleDnsEnabled: Boolean = false,
   ): Boolean {
     val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
     val normalizedIp = selfIp?.takeIf { it.isNotBlank() }
@@ -395,7 +432,8 @@ internal object TailwareTileStateStore {
             preferences.getBoolean(KEY_CACHED_ABLE_TO_START, false) != ableToStartVpn ||
             preferences.getString(KEY_CACHED_SELF_IP, null) != normalizedIp ||
             preferences.getString(KEY_CACHED_ACTIVE_EXIT_NODE, null) != normalizedExitNodeName ||
-            storedUnderlyingOnline != underlyingOnline
+            storedUnderlyingOnline != underlyingOnline ||
+            preferences.getBoolean(KEY_CACHED_TAILSCALE_DNS_ENABLED, false) != tailscaleDnsEnabled
     if (!changed) return false
 
     preferences.edit {
@@ -409,6 +447,7 @@ internal object TailwareTileStateStore {
       else putString(KEY_CACHED_ACTIVE_EXIT_NODE, normalizedExitNodeName)
       if (underlyingOnline == null) remove(KEY_CACHED_UNDERLYING_ONLINE)
       else putBoolean(KEY_CACHED_UNDERLYING_ONLINE, underlyingOnline)
+      putBoolean(KEY_CACHED_TAILSCALE_DNS_ENABLED, tailscaleDnsEnabled)
     }
     return true
   }
@@ -447,6 +486,9 @@ private class ImmediateFuture<T>(private val value: T) : ListenableFuture<T> {
 
 private const val PREFERENCES_FILE = "tailware_wear_preferences"
 private const val KEY_TILE_QUICK_ACTION = "tile_quick_action"
+private const val KEY_TILE_SHOW_IP = "tile_show_ip"
+private const val KEY_TILE_SHOW_EXIT_NODE = "tile_show_exit_node"
+private const val KEY_TILE_SHOW_MAGIC_DNS = "tile_show_magic_dns"
 private const val KEY_LANGUAGE = "language"
 private const val KEY_CACHED_IPN_STATE = "tile_cached_ipn_state"
 private const val KEY_CACHED_VPN_ACTIVE = "tile_cached_vpn_active"
@@ -455,9 +497,79 @@ private const val KEY_CACHED_ABLE_TO_START = "tile_cached_able_to_start"
 private const val KEY_CACHED_SELF_IP = "tile_cached_self_ip"
 private const val KEY_CACHED_ACTIVE_EXIT_NODE = "tile_cached_active_exit_node"
 private const val KEY_CACHED_UNDERLYING_ONLINE = "tile_cached_underlying_online"
+private const val KEY_CACHED_TAILSCALE_DNS_ENABLED = "tile_cached_tailscale_dns_enabled"
 private const val LANGUAGE_ENGLISH = "English"
 private const val LANGUAGE_DUTCH = "Dutch"
 private const val LANGUAGE_FRENCH = "French"
 private const val LANGUAGE_GERMAN = "German"
 private const val QUICK_ACTION_TOGGLE = "ToggleConnection"
 private const val QUICK_ACTION_OPEN_APP = "OpenApp"
+
+internal enum class TileTunnelStatus {
+  Connected,
+  Connecting,
+  Disconnected,
+}
+
+/**
+ * The persisted desired state deliberately wins during transitions, so a Tile refresh immediately
+ * reflects the user's latest tap instead of waiting for a TUN callback.
+ */
+internal fun resolveTileTunnelStatus(
+    ipnState: Ipn.State,
+    vpnActive: Boolean,
+    desiredVpnEnabled: Boolean,
+    vpnAuthorized: Boolean,
+    ableToStartVpn: Boolean,
+): TileTunnelStatus =
+    when {
+      !desiredVpnEnabled -> TileTunnelStatus.Disconnected
+      ipnState == Ipn.State.Running && vpnActive -> TileTunnelStatus.Connected
+      vpnAuthorized && ableToStartVpn -> TileTunnelStatus.Connecting
+      else -> TileTunnelStatus.Disconnected
+    }
+
+internal fun buildTileNetworkDetail(
+    selfIp: String?,
+    tailscaleDnsEnabled: Boolean,
+    showIp: Boolean,
+    showMagicDns: Boolean,
+): String? =
+    buildList {
+          if (showIp) selfIp?.takeIf { it.isNotBlank() }?.let { add("IP $it") }
+          if (showMagicDns) add(if (tailscaleDnsEnabled) "DNS ON" else "DNS OFF")
+        }
+        .takeIf { it.isNotEmpty() }
+        ?.joinToString(" • ")
+
+internal fun buildTileExitDetail(
+    activeExitNodeName: String?,
+    showExitNode: Boolean,
+    offLabel: String,
+): String? {
+  if (!showExitNode) return null
+  return "Exit: ${activeExitNodeName?.takeIf { it.isNotBlank() } ?: offLabel}"
+}
+
+internal enum class TileToggleDecision {
+  Start,
+  Stop,
+  OpenApp,
+}
+
+/**
+ * Resolves a Tile tap from the user's persisted intent, not from a lagging TUN callback.
+ *
+ * An explicit ON choice can always be switched OFF, including during a transition. A new start is
+ * accepted only after account and VPN setup have completed.
+ */
+internal fun tileToggleDecision(
+    desiredVpnEnabled: Boolean,
+    vpnAuthorized: Boolean,
+    ableToStartVpn: Boolean,
+): TileToggleDecision =
+    when {
+      desiredVpnEnabled -> TileToggleDecision.Stop
+      vpnAuthorized && ableToStartVpn -> TileToggleDecision.Start
+      else -> TileToggleDecision.OpenApp
+    }

@@ -191,75 +191,207 @@ func (a *App) runBackend(ctx context.Context, hardwareAttestation bool) error {
 		select {
 		case s := <-stateCh:
 			state = s
-			if state >= ipn.Starting && vpnService.service != nil && b.isConfigNonNilAndDifferent(cfg.rcfg, cfg.dcfg) {
+			service, serviceOK := currentVPNServiceSnapshot()
+			if state >= ipn.Starting && serviceOK && b.isConfigNonNilAndDifferent(cfg.rcfg, cfg.dcfg) {
 				// On state change, check if there are router or config changes requiring an update to VPNBuilder
-				if err := b.updateTUN(cfg.rcfg, cfg.dcfg); err != nil {
+				if err := b.updateTUN(cfg.rcfg, cfg.dcfg, service); err != nil {
 					if errors.Is(err, errMultipleUsers) {
 						// TODO: surface error to user
 					}
-					a.closeVpnService(err, b)
+					a.closeVpnService(err, b, service)
 				}
 			}
 		case c := <-configs:
 			cfg = c
-			if vpnService.service == nil || !b.isConfigNonNilAndDifferent(cfg.rcfg, cfg.dcfg) {
+			service, serviceOK := currentVPNServiceSnapshot()
+			if !serviceOK || !b.isConfigNonNilAndDifferent(cfg.rcfg, cfg.dcfg) {
 				configErrs <- nil
 				break
 			}
-			configErrs <- b.updateTUN(cfg.rcfg, cfg.dcfg)
-		case s := <-onVPNRequested:
-			if vpnService.service != nil && vpnService.service.ID() == s.ID() {
-				// Still the same VPN instance, do nothing
-				break
+			configErrs <- b.updateTUN(cfg.rcfg, cfg.dcfg, service)
+		case command := <-onVPNRequested:
+			serviceID := command.service.ID()
+			desiredGeneration := command.service.CommandGeneration()
+			if command.generation != desiredGeneration {
+				log.Printf(
+					"onVPNRequested: ignoring service=%q generation=%d; Android desires generation=%d",
+					serviceID,
+					command.generation,
+					desiredGeneration,
+				)
+				continue
 			}
-			netns.SetAndroidProtectFunc(func(fd int) error {
-				if !s.Protect(int32(fd)) {
-					// TODO(bradfitz): return an error back up to netns if this fails, once
-					// we've had some experience with this and analyzed the logs over a wide
-					// range of Android phones. For now we're being paranoid and conservative
-					// and do the JNI call to protect best effort, only logging if it fails.
-					// The risk of returning an error is that it breaks users on some Android
-					// versions even when they're not using exit nodes. I'd rather the
-					// relatively few number of exit node users file bug reports if Tailscale
-					// doesn't work and then we can look for this log print.
-					log.Printf("[unexpected] VpnService.protect(%d) returned false", fd)
-				}
-				return nil // even on error. see big TODO above.
-			})
-			netns.SetAndroidBindToNetworkFunc(func(fd int) error {
-				if ok := a.appCtx.BindSocketToNetwork(int32(fd)); !ok {
-					log.Printf("[unexpected] IPNService.bindSocketToNetwork(%d) returned false", fd)
-				}
-				return nil
-			})
-			log.Printf("onVPNRequested: rebind required")
-			// TODO(catzkorn): When we start the android application
-			// we bind sockets before we have access to the VpnService.protect()
-			// function which is needed to avoid routing loops. When we activate
-			// the service we get access to the protect, but do not retrospectively
-			// protect the sockets already opened, which breaks connectivity.
-			// As a temporary fix, we rebind and protect the magicsock.Conn on connect
-			// which restores connectivity.
-			// See https://github.com/tailscale/corp/issues/13814
-			b.backend.DebugRebind()
+			if command.generation < vpnService.commandGeneration {
+				log.Printf(
+					"onVPNRequested: ignoring stale service=%q generation=%d; processed generation=%d",
+					serviceID,
+					command.generation,
+					vpnService.commandGeneration,
+				)
+				continue
+			}
 
-			vpnService.service = s
+			sameService := vpnService.service != nil && vpnService.serviceID == serviceID
+			if command.generation == vpnService.commandGeneration {
+				switch vpnService.commandKind {
+				case vpnServiceCommandDisconnect:
+					if vpnService.serviceID == serviceID {
+						log.Printf(
+							"onVPNRequested: ignoring service=%q generation=%d already processed as disconnect",
+							serviceID,
+							command.generation,
+						)
+						continue
+					}
+					log.Printf(
+						"onVPNRequested: replacement service=%q resumes generation=%d after service=%q disconnected",
+						serviceID,
+						command.generation,
+						vpnService.serviceID,
+					)
+				case vpnServiceCommandStart:
+					if sameService {
+						log.Printf(
+							"onVPNRequested: ignoring duplicate service=%q generation=%d",
+							serviceID,
+							command.generation,
+						)
+						continue
+					}
+				}
+			}
+
+			if vpnService.service != nil && !sameService {
+				// A TUN established by a different Android VpnService must not
+				// be handed to the replacement service, even when the config and
+				// desired generation are unchanged.
+				b.devices.Down()
+				b.CloseTUNs()
+			}
+
+			if !sameService {
+				s := command.service
+				netns.SetAndroidProtectFunc(func(fd int) error {
+					if !s.Protect(int32(fd)) {
+						// TODO(bradfitz): return an error back up to netns if this fails, once
+						// we've had some experience with this and analyzed the logs over a wide
+						// range of Android phones. For now we're being paranoid and conservative
+						// and do the JNI call to protect best effort, only logging if it fails.
+						// The risk of returning an error is that it breaks users on some Android
+						// versions even when they're not using exit nodes. I'd rather the
+						// relatively few number of exit node users file bug reports if Tailscale
+						// doesn't work and then we can look for this log print.
+						log.Printf("[unexpected] VpnService.protect(%d) returned false", fd)
+					}
+					return nil // even on error. see big TODO above.
+				})
+				netns.SetAndroidBindToNetworkFunc(func(fd int) error {
+					if ok := a.appCtx.BindSocketToNetwork(int32(fd)); !ok {
+						log.Printf("[unexpected] IPNService.bindSocketToNetwork(%d) returned false", fd)
+					}
+					return nil
+				})
+				log.Printf("onVPNRequested: rebind required")
+				// TODO(catzkorn): When we start the android application
+				// we bind sockets before we have access to the VpnService.protect()
+				// function which is needed to avoid routing loops. When we activate
+				// the service we get access to the protect, but do not retrospectively
+				// protect the sockets already opened, which breaks connectivity.
+				// As a temporary fix, we rebind and protect the magicsock.Conn on connect
+				// which restores connectivity.
+				// See https://github.com/tailscale/corp/issues/13814
+				b.backend.DebugRebind()
+			} else {
+				log.Printf(
+					"onVPNRequested: advancing service=%q from generation=%d to generation=%d",
+					serviceID,
+					vpnService.commandGeneration,
+					command.generation,
+				)
+			}
+
+			vpnService.service = command.service
+			vpnService.serviceID = serviceID
+			vpnService.commandGeneration = command.generation
+			vpnService.commandKind = vpnServiceCommandStart
 
 			if state >= ipn.Starting && b.isConfigNonNilAndDifferent(cfg.rcfg, cfg.dcfg) {
-				if err := b.updateTUN(cfg.rcfg, cfg.dcfg); err != nil {
-					a.closeVpnService(err, b)
+				service, _ := currentVPNServiceSnapshot()
+				if err := b.updateTUN(cfg.rcfg, cfg.dcfg, service); err != nil {
+					a.closeVpnService(err, b, service)
+				}
+			} else if state >= ipn.Starting && b.lastCfg != nil {
+				// A newer command or replacement Android service can take ownership
+				// of an already-active tunnel without requiring a replacement TUN.
+				// Confirm it for the new owner so Android can restore Connected UI.
+				service, _ := currentVPNServiceSnapshot()
+				if service.isDesiredCommandCurrent() {
+					service.service.UpdateVpnStatus(true)
 				}
 			}
-		case s := <-onDisconnect:
-			if vpnService.service != nil && vpnService.service.ID() == s.ID() {
-				if b.devices.Down() {
-					log.Printf("tunnel brought down on disconnect")
-				}
-				b.CloseTUNs()
-				netns.SetAndroidProtectFunc(nil)
-				netns.SetAndroidBindToNetworkFunc(nil)
-				vpnService.service = nil
+		case command := <-onDisconnect:
+			serviceID := command.service.ID()
+			desiredGeneration := command.service.CommandGeneration()
+			if command.generation != desiredGeneration {
+				log.Printf(
+					"onDisconnect: ignoring service=%q generation=%d; Android desires generation=%d",
+					serviceID,
+					command.generation,
+					desiredGeneration,
+				)
+				continue
 			}
+			if command.generation < vpnService.commandGeneration {
+				log.Printf(
+					"onDisconnect: ignoring stale service=%q generation=%d; processed generation=%d",
+					serviceID,
+					command.generation,
+					vpnService.commandGeneration,
+				)
+				continue
+			}
+			if command.generation == vpnService.commandGeneration {
+				if vpnService.commandKind == vpnServiceCommandDisconnect {
+					if vpnService.serviceID != serviceID {
+						log.Printf(
+							"onDisconnect: advancing equal-generation disconnect barrier from service=%q to service=%q generation=%d",
+							vpnService.serviceID,
+							serviceID,
+							command.generation,
+						)
+						vpnService.serviceID = serviceID
+						continue
+					}
+					log.Printf(
+						"onDisconnect: ignoring duplicate service=%q generation=%d",
+						serviceID,
+						command.generation,
+					)
+					continue
+				}
+				if vpnService.service == nil || vpnService.serviceID != serviceID {
+					log.Printf(
+						"onDisconnect: ignoring mismatched service=%q generation=%d; active service=%q",
+						serviceID,
+						command.generation,
+						vpnService.serviceID,
+					)
+					continue
+				}
+			}
+
+			if b.devices.Down() {
+				log.Printf("tunnel brought down on disconnect generation=%d", command.generation)
+			}
+			b.CloseTUNs()
+			netns.SetAndroidProtectFunc(nil)
+			netns.SetAndroidBindToNetworkFunc(nil)
+			vpnService.service = nil
+			// Retain the disconnected ID as an equal-generation replay barrier.
+			// A new service ID may still replace it for the same generation.
+			vpnService.serviceID = serviceID
+			vpnService.commandGeneration = command.generation
+			vpnService.commandKind = vpnServiceCommandDisconnect
 		case i := <-onDNSConfigChanged:
 			// TODO (barnstar): Consider using [dns.Manager.RecompileDNSConfig] here.
 			// NetworkChanged injects a netmon event that has the side effect
@@ -406,22 +538,44 @@ func (b *backend) isConfigNonNilAndDifferent(rcfg *router.Config, dcfg *dns.OSCo
 	return rcfg != nil
 }
 
-func (a *App) closeVpnService(err error, b *backend) {
-	log.Printf("VPN update failed: %v", err)
-
-	mp := new(ipn.MaskedPrefs)
-	mp.WantRunning = false
-	mp.WantRunningSet = true
-
-	if _, localApiErr := a.EditPrefs(*mp); localApiErr != nil {
-		log.Printf("localapi edit prefs error %v", localApiErr)
+func (a *App) closeVpnService(err error, b *backend, service vpnServiceSnapshot) {
+	if !service.isProcessedCommandCurrent() {
+		log.Printf(
+			"VPN update failed for stale service=%q generation=%d (processed service=%q generation=%d); ignoring: %v",
+			service.serviceID,
+			service.commandGeneration,
+			vpnService.serviceID,
+			vpnService.commandGeneration,
+			err,
+		)
+		return
 	}
+	if !service.service.HandleVpnServiceError(service.commandGeneration) {
+		log.Printf(
+			"VPN update failure was not claimed by Android for service=%q generation=%d; ignoring: %v",
+			service.serviceID,
+			service.commandGeneration,
+			err,
+		)
+		return
+	}
+	log.Printf(
+		"VPN update failed for claimed service=%q generation=%d: %v",
+		service.serviceID,
+		service.commandGeneration,
+		err,
+	)
 
 	if b.devices.Down() {
 		log.Printf("tunnel brought down on VPN service error: %v", err)
 	}
 	b.CloseTUNs()
+	netns.SetAndroidProtectFunc(nil)
+	netns.SetAndroidBindToNetworkFunc(nil)
+	service.service.UpdateVpnStatus(false)
 
-	vpnService.service.DisconnectVPN()
 	vpnService.service = nil
+	vpnService.serviceID = service.serviceID
+	vpnService.commandGeneration = service.commandGeneration
+	vpnService.commandKind = vpnServiceCommandDisconnect
 }

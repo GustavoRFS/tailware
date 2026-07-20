@@ -4,6 +4,10 @@ param(
     [string]$Serial,
 
     [Parameter()]
+    [ValidatePattern('^[^:\s]+:\d{1,5}$')]
+    [string]$ConnectAddress,
+
+    [Parameter()]
     [ValidatePattern('^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$')]
     [string]$PackageId = 'io.github.vladbezm.tailware',
 
@@ -149,6 +153,15 @@ function Set-SecureSetting {
 }
 
 $script:ResolvedAdbPath = Resolve-AdbPath -RequestedPath $AdbPath
+
+if ($ConnectAddress) {
+    $connectOutput = Invoke-AdbGlobal -Arguments @('connect', $ConnectAddress)
+    Write-Host "ADB connect: $connectOutput"
+    if (-not $Serial) {
+        $Serial = $ConnectAddress
+    }
+}
+
 $deviceTable = @(Get-AdbDeviceTable)
 
 if ($Serial) {

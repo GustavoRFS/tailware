@@ -3,6 +3,9 @@
 
 package com.tailscale.ipn.wear
 
+import com.tailscale.ipn.UnderlyingNetworkStatus
+import com.tailscale.ipn.ui.model.Ipn
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -37,14 +40,71 @@ class TailwareRestoreAndLoginTest {
   }
 
   @Test
-  fun loginUrlRequiresAnActiveAttemptAndMustBeFresh() {
+  fun loginUrlIsValidatedOnlyAgainstTheCurrentInMemoryAttempt() {
     val oldUrl = "https://login.tailscale.com/a/old"
     val newUrl = "https://login.tailscale.com/a/new"
-    val oldFingerprint = loginUrlFingerprint(oldUrl)
 
-    assertFalse(shouldAcceptLoginUrl(false, newUrl, oldFingerprint))
-    assertFalse(shouldAcceptLoginUrl(true, oldUrl, oldFingerprint))
-    assertTrue(shouldAcceptLoginUrl(true, newUrl, oldFingerprint))
+    assertFalse(shouldAcceptLoginUrl(null, newUrl))
+    assertFalse(shouldAcceptLoginUrl(7L, "  "))
+    assertTrue(shouldAcceptLoginUrl(7L, oldUrl))
+    assertTrue(shouldAcceptLoginUrl(7L, newUrl))
+  }
+
+  @Test
+  fun staleLoginGenerationCannotCompleteOrCancelANewerAttempt() {
+    assertFalse(isCurrentLoginAttempt(activeGeneration = 8L, expectedGeneration = 7L))
+    assertTrue(isCurrentLoginAttempt(activeGeneration = 8L, expectedGeneration = 8L))
+  }
+
+  @Test
+  fun needsLoginWinsOverAStillCachedProfileAndKeepsReauthenticationVisible() {
+    assertEquals(
+        WearAccountState.Authenticating,
+        resolveWearAccountState(
+            ipnState = Ipn.State.NeedsLogin,
+            hasProfile = true,
+            hasLoginUrl = true,
+            hasActiveLoginAttempt = true,
+        ),
+    )
+    assertEquals(
+        WearAccountState.SignedOut,
+        resolveWearAccountState(
+            ipnState = Ipn.State.NeedsLogin,
+            hasProfile = true,
+            hasLoginUrl = false,
+            hasActiveLoginAttempt = false,
+        ),
+    )
+    assertEquals(
+        WearAccountState.NeedsMachineAuthorization,
+        resolveWearAccountState(
+            ipnState = Ipn.State.NeedsMachineAuth,
+            hasProfile = true,
+            hasLoginUrl = true,
+            hasActiveLoginAttempt = true,
+        ),
+    )
+  }
+
+  @Test
+  fun everyNonOnlineNetworkStateUsesLocalProfileRemoval() {
+    assertTrue(shouldUseLocalOnlyLogout(UnderlyingNetworkStatus.Offline))
+    assertTrue(shouldUseLocalOnlyLogout(UnderlyingNetworkStatus.Limited))
+    assertTrue(shouldUseLocalOnlyLogout(UnderlyingNetworkStatus.Unknown))
+    assertFalse(shouldUseLocalOnlyLogout(UnderlyingNetworkStatus.Online))
+  }
+
+  @Test
+  fun pingFailureIncludesTargetAndUsefulBackendDiagnostics() {
+    assertEquals(
+        "Ping to desktop (100.64.0.2) timed out. The device may be asleep, offline, or unreachable.",
+        pingFailureMessage("desktop", "100.64.0.2", "context deadline exceeded"),
+    )
+    assertEquals(
+        "Ping to desktop (100.64.0.2) failed: no matching peer",
+        pingFailureMessage("desktop", "100.64.0.2", "no matching peer."),
+    )
   }
 
   @Test

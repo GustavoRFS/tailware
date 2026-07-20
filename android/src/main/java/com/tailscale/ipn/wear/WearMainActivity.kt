@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -44,15 +45,24 @@ class WearMainActivity : ComponentActivity() {
     // IpnViewModel starts LocalAPI requests from its base-class initializer. Initialize the
     // native application before the lazy Wear view model is first accessed by Compose.
     App.get()
+    viewModel.onActivityAttached()
     setContent {
       TailwareTheme {
         TailwareApp(
             viewModel = viewModel,
             onSetOptionalNotifications = ::setOptionalNotifications,
             onOpenLoginOnPhone = ::openLoginOnPhone,
+            onSensitiveLoginContentVisible = ::setSensitiveLoginContentVisible,
         )
       }
     }
+  }
+
+  override fun onDestroy() {
+    // Compose disposes its routes from ComponentActivity.onDestroy(). Mark the recreation first so
+    // that a retained ViewModel does not interpret that disposal as an explicit sign-in cancel.
+    if (isChangingConfigurations) viewModel.onActivityRecreationStarting()
+    super.onDestroy()
   }
 
   override fun onResume() {
@@ -107,6 +117,14 @@ class WearMainActivity : ComponentActivity() {
       result
           .onSuccess { viewModel.onPhoneLoginOpened(url) }
           .onFailure { viewModel.onPhoneLoginLaunchFailed(url, it) }
+    }
+  }
+
+  private fun setSensitiveLoginContentVisible(visible: Boolean) {
+    if (visible) {
+      window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    } else {
+      window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
   }
 

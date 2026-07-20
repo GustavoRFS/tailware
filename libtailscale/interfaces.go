@@ -94,6 +94,19 @@ type IPNService interface {
 	// we start a new IPN service, it should have a new ID.
 	ID() string
 
+	// CommandGeneration returns the newest desired-state generation known to
+	// Android. Go uses it to avoid letting a late error from an older command
+	// overwrite or disconnect a newer user command.
+	CommandGeneration() int64
+
+	// HandleVpnServiceError atomically claims an error for commandGeneration
+	// on Android. It returns true only when that exact generation still owns
+	// the desired state and Android has accepted responsibility for reconciling
+	// WantRunning and the service lifecycle. Implementations must not
+	// synchronously call RequestVPN or ServiceDisconnect from this callback,
+	// because it runs on the Go backend loop.
+	HandleVpnServiceError(commandGeneration int64) bool
+
 	// Protect protects socket identified by the given file descriptor from
 	// being captured by the VPN. The return value indicates whether or not the
 	// socket was successfully protected.
@@ -240,12 +253,12 @@ type ShareFileHelper interface {
 // The below are global callbacks that allow the Java application to notify Go
 // of various state changes.
 
-func RequestVPN(service IPNService) {
-	onVPNRequested <- service
+func RequestVPN(service IPNService, commandGeneration int64) {
+	onVPNRequested <- vpnServiceCommand{service: service, generation: commandGeneration}
 }
 
-func ServiceDisconnect(service IPNService) {
-	onDisconnect <- service
+func ServiceDisconnect(service IPNService, commandGeneration int64) {
+	onDisconnect <- vpnServiceCommand{service: service, generation: commandGeneration}
 }
 
 func SendLog(logstr []byte) {

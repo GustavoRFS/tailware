@@ -9,13 +9,26 @@ import (
 	"tailscale.com/net/netmon"
 )
 
+type vpnServiceCommand struct {
+	service    IPNService
+	generation int64
+}
+
+type vpnServiceCommandKind uint8
+
+const (
+	vpnServiceCommandNone vpnServiceCommandKind = iota
+	vpnServiceCommandStart
+	vpnServiceCommandDisconnect
+)
+
 var (
-	// onVPNRequested receives global IPNService references when
-	// a VPN connection is requested.
-	onVPNRequested = make(chan IPNService)
-	// onDisconnect receives global IPNService references when
-	// disconnecting.
-	onDisconnect = make(chan IPNService)
+	// onVPNRequested receives IPNService references together with the exact
+	// desired-state generation that requested the VPN connection.
+	onVPNRequested = make(chan vpnServiceCommand)
+	// onDisconnect receives IPNService references together with the exact
+	// desired-state generation that requested the disconnect.
+	onDisconnect = make(chan vpnServiceCommand)
 
 	// onGoogleToken receives google ID tokens.
 	onGoogleToken = make(chan string)

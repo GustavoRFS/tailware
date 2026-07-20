@@ -52,6 +52,28 @@ object TailwareVpnStateStore {
   }
 
   /**
+   * Claims a new generation for a technical start while preserving the user's ON choice.
+   *
+   * Reading and claiming happen under the same lock. Therefore, a boot restore or technical restart
+   * can never enqueue an old ON command after a newer OFF command has already won.
+   */
+  @SuppressLint("ApplySharedPref")
+  @Synchronized
+  fun claimEnabledCommandIfCurrent(
+      context: Context,
+      expected: DesiredVpnState,
+  ): DesiredVpnState? {
+    val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
+    val current =
+        DesiredVpnState(
+            enabled = preferences.getBoolean(KEY_DESIRED_VPN_ENABLED, false),
+            generation = preferences.getLong(KEY_DESIRED_VPN_GENERATION, 0L),
+        )
+    if (current != expected || !current.enabled) return null
+    return persistNextState(preferences, enabled = true, current.generation)
+  }
+
+  /**
    * Changes the desired state only when no newer user command has replaced [expected].
    *
    * This is used to roll back a command that Android refused to dispatch without ever overwriting a
@@ -73,6 +95,32 @@ object TailwareVpnStateStore {
     if (current != expected) return null
     if (current.enabled == enabled) return current
     return persistNextState(preferences, enabled, current.generation)
+  }
+
+  /**
+   * Atomically rolls a terminally failed ON command forward to a new OFF generation.
+   *
+   * The exact failed generation must still own the desired state. A newer OFF or ON command is
+   * therefore never overwritten by cleanup belonging to an older service attempt.
+   */
+  @SuppressLint("ApplySharedPref")
+  @Synchronized
+  fun rollbackFailedVpnStartIfCurrent(
+      context: Context,
+      failedCommand: DesiredVpnState,
+  ): DesiredVpnState? {
+    val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
+    val current =
+        DesiredVpnState(
+            enabled = preferences.getBoolean(KEY_DESIRED_VPN_ENABLED, false),
+            generation = preferences.getLong(KEY_DESIRED_VPN_GENERATION, 0L),
+        )
+    val rollback = terminalVpnFailureRollback(current, failedCommand) ?: return null
+    preferences.edit(commit = true) {
+      putBoolean(KEY_DESIRED_VPN_ENABLED, rollback.enabled)
+      putLong(KEY_DESIRED_VPN_GENERATION, rollback.generation)
+    }
+    return rollback
   }
 
   private fun persistNextState(
@@ -106,3 +154,15 @@ internal fun isCurrentVpnCommand(
     commandGeneration == currentState.generation && requestedEnabled == currentState.enabled
 
 internal fun shouldDispatchVpnRestart(desiredVpnEnabled: Boolean): Boolean = desiredVpnEnabled
+
+/**
+ * Pure form of the terminal-start rollback rule, kept separate so every race edge can be unit
+ * tested without Android storage.
+ */
+internal fun terminalVpnFailureRollback(
+    currentState: DesiredVpnState,
+    failedCommand: DesiredVpnState,
+): DesiredVpnState? {
+  if (!failedCommand.enabled || currentState != failedCommand) return null
+  return DesiredVpnState(enabled = false, generation = currentState.generation + 1L)
+}

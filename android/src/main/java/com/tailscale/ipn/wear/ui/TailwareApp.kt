@@ -57,11 +57,15 @@ import com.tailscale.ipn.wear.TailwareViewModel
 import com.tailscale.ipn.wear.TileQuickAction
 import com.tailscale.ipn.wear.VpnAuthorization
 import com.tailscale.ipn.wear.WearAccountState
+import com.tailscale.ipn.wear.WearAction
 import com.tailscale.ipn.wear.WearErrorOrigin
 import com.tailscale.ipn.wear.WearHealthSeverity
+import com.tailscale.ipn.wear.WearHealthWarning
 import com.tailscale.ipn.wear.WearPeer
 import com.tailscale.ipn.wear.WearTunnelStatus
 import com.tailscale.ipn.wear.WearUiState
+import com.tailscale.ipn.wear.tile.TailwareTileStateStore
+import com.tailscale.ipn.wear.tile.TailwareTileUpdates
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -95,12 +99,43 @@ fun TailwareApp(
     viewModel: TailwareViewModel,
     onSetOptionalNotifications: (Boolean) -> Unit,
     onOpenLoginOnPhone: (String) -> Unit,
+    onSensitiveLoginContentVisible: (Boolean) -> Unit,
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
+  val context = LocalContext.current
   val navController = rememberSwipeDismissableNavController()
   val backStackEntry by navController.currentBackStackEntryAsState()
   var selectedPeerId by rememberSaveable { mutableStateOf<String?>(null) }
   var accountRootRoute by rememberSaveable { mutableStateOf(Route.Gate) }
+
+  LaunchedEffect(
+      state.accountState,
+      state.selfNode?.dnsName,
+      state.activeExitNodeId,
+      state.activeExitNodeName,
+      state.allowLanAccess,
+      state.error?.message,
+      state.healthWarnings,
+      state.language,
+  ) {
+    val changed =
+        if (state.accountState == WearAccountState.SignedOut) {
+          TailwareTileStateStore.clearIdentityAndStatus(context)
+        } else {
+          val warning = state.healthWarnings.firstOrNull()
+          TailwareTileStateStore.writeSupplemental(
+              context = context,
+              magicDnsName = state.selfNode?.dnsName,
+              allowLanAccess = state.activeExitNodeId != null && state.allowLanAccess,
+              problemMessage =
+                  state.error?.message?.let { localizedUserMessage(state, it) }
+                      ?: warning?.let { localizedHealthMessage(state, it) },
+              problemIsError = state.error != null || warning?.severity == WearHealthSeverity.High,
+          )
+        }
+    if (changed) TailwareTileUpdates.request(context)
+  }
+  LaunchedEffect(state.language) { TailwareTileUpdates.request(context) }
 
   val onboardingRoutes = remember {
     setOf(
@@ -110,10 +145,15 @@ fun TailwareApp(
         Route.LoginQr,
         Route.AuthKey,
         Route.ControlUrl,
+        Route.VpnSetup,
     )
   }
 
   val currentRoute = backStackEntry?.destination?.route
+  LaunchedEffect(currentRoute) {
+    onSensitiveLoginContentVisible(currentRoute == Route.LoginQr || currentRoute == Route.AuthKey)
+  }
+  DisposableEffect(Unit) { onDispose { onSensitiveLoginContentVisible(false) } }
   LaunchedEffect(
       state.accountState,
       state.loginUrl,
@@ -169,19 +209,19 @@ fun TailwareApp(
     composable(Route.Welcome) {
       WelcomeScreen(
           state = state,
-          onConnectAccount = { navController.navigate(Route.LoginMethods) },
+          onDismissLogoutNotice = viewModel::clearError,
+          onConnectAccount = {
+            navController.navigate(
+                if (state.vpnAuthorization == VpnAuthorization.AdbRequired) Route.VpnSetup
+                else Route.LoginMethods)
+          },
       )
     }
     composable(Route.LoginMethods) {
       LoginMethodsScreen(
           state = state,
-          onPhoneLogin = {
+          onTailscaleLogin = {
             if (viewModel.startInteractiveLogin(LoginPresentation.Phone)) {
-              navController.navigate(Route.LoginQr)
-            }
-          },
-          onQrLogin = {
-            if (viewModel.startInteractiveLogin(LoginPresentation.QrCode)) {
               navController.navigate(Route.LoginQr)
             }
           },
@@ -328,9 +368,24 @@ fun TailwareApp(
           delay(2_000L)
         }
       }
+      LaunchedEffect(state.accountState, state.vpnAuthorization) {
+        if (state.accountState == WearAccountState.SignedOut &&
+            state.vpnAuthorization == VpnAuthorization.Granted) {
+          navController.navigate(Route.LoginMethods) {
+            popUpTo(Route.VpnSetup) { inclusive = true }
+            launchSingleTop = true
+          }
+        }
+      }
       VpnSetupScreen(
           state = state,
           onRetry = { viewModel.refreshVpnAuthorization(com.tailscale.ipn.App.get()) },
+          onContinueWithoutVpn =
+              if (state.accountState == WearAccountState.SignedOut) {
+                { navController.navigate(Route.LoginMethods) }
+              } else {
+                null
+              },
           onDismissError = viewModel::clearError,
       )
     }
@@ -362,7 +417,11 @@ private fun GateScreen() {
 }
 
 @Composable
-private fun WelcomeScreen(state: WearUiState, onConnectAccount: () -> Unit) {
+private fun WelcomeScreen(
+    state: WearUiState,
+    onDismissLogoutNotice: () -> Unit,
+    onConnectAccount: () -> Unit,
+) {
   TailwareListScreen(title = "TAILWARE") {
     item {
       Image(
@@ -410,14 +469,18 @@ private fun WelcomeScreen(state: WearUiState, onConnectAccount: () -> Unit) {
           accent = true,
       )
     }
+    errorItem(
+        state,
+        onDismissLogoutNotice,
+        operations = setOf(WearAction.Logout),
+    )
   }
 }
 
 @Composable
 private fun LoginMethodsScreen(
     state: WearUiState,
-    onPhoneLogin: () -> Unit,
-    onQrLogin: () -> Unit,
+    onTailscaleLogin: () -> Unit,
     onAuthKey: () -> Unit,
     onControlUrl: () -> Unit,
     onDismissError: () -> Unit,
@@ -437,20 +500,20 @@ private fun LoginMethodsScreen(
               label =
                   tr(
                       state,
-                      "Continue on phone",
-                      "Doorgaan op telefoon",
-                      "Continuer sur le téléphone",
-                      "Auf dem Smartphone fortfahren",
+                      "Sign in with Tailscale",
+                      "Aanmelden met Tailscale",
+                      "Se connecter avec Tailscale",
+                      "Mit Tailscale anmelden",
                   ),
               secondary =
                   tr(
                       state,
-                      "Fastest secure sign-in method",
-                      "Snelste veilige aanmeldmethode",
-                      "Méthode de connexion sécurisée la plus rapide",
-                      "Schnellste sichere Anmeldemethode",
+                      "Open on your phone, with QR as fallback",
+                      "Open op je telefoon, met QR als reserve",
+                      "Ouvrir sur le téléphone, QR en secours",
+                      "Auf dem Smartphone öffnen, QR als Alternative",
                   ),
-              onClick = onPhoneLogin,
+              onClick = onTailscaleLogin,
               accent = true,
               enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
           )
@@ -460,26 +523,33 @@ private fun LoginMethodsScreen(
               label =
                   tr(
                       state,
-                      "QR code or sign-in code",
-                      "QR-code of aanmeldcode",
-                      "Code QR ou code de connexion",
-                      "QR-Code oder Anmeldecode",
+                      "Tailscale authentication key",
+                      "Tailscale-authenticatiesleutel",
+                      "Clé d’authentification Tailscale",
+                      "Tailscale-Authentifizierungsschlüssel",
                   ),
               secondary =
                   tr(
                       state,
-                      "Scan it or enter the code on another device",
-                      "Scan of voer de code in op een ander apparaat",
-                      "Scannez ou saisissez le code sur un autre appareil",
-                      "Scannen oder Code auf anderem Gerät eingeben",
+                      "For advanced or unattended setup",
+                      "Voor geavanceerde of onbeheerde installatie",
+                      "Pour une installation avancée ou autonome",
+                      "Für erweiterte oder unbeaufsichtigte Einrichtung",
                   ),
-              onClick = onQrLogin,
+              onClick = onAuthKey,
               enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
           )
         }
         item {
           TailwareChip(
-              label = "Headscale / custom server",
+              label =
+                  tr(
+                      state,
+                      "Headscale / custom server",
+                      "Headscale / aangepaste server",
+                      "Headscale / serveur personnalisé",
+                      "Headscale / benutzerdefinierter Server",
+                  ),
               secondary =
                   tr(
                       state,
@@ -489,28 +559,6 @@ private fun LoginMethodsScreen(
                       "Control-Server-URL eingeben",
                   ),
               onClick = onControlUrl,
-              enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
-          )
-        }
-        item {
-          TailwareChip(
-              label =
-                  tr(
-                      state,
-                      "Authentication key",
-                      "Authenticatiesleutel",
-                      "Clé d’authentification",
-                      "Authentifizierungsschlüssel",
-                  ),
-              secondary =
-                  tr(
-                      state,
-                      "Useful for advanced setup",
-                      "Voor geavanceerde installatie",
-                      "Pour une installation avancée",
-                      "Für die erweiterte Einrichtung",
-                  ),
-              onClick = onAuthKey,
               enabled = state.busyAction != com.tailscale.ipn.wear.WearAction.Login,
           )
         }
@@ -526,7 +574,7 @@ private fun LoginQrScreen(
     onCancel: () -> Unit,
     onDismissError: () -> Unit,
 ) {
-  val qr = rememberQrCode(state.loginUrl)
+  val qr = rememberQrCode(state.loginUrl, size = 420)
   val small = LocalConfiguration.current.screenWidthDp < 210
   TailwareListScreen(title = tr(state, "Sign in", "Aanmelden", "Connexion", "Anmelden")) {
     errorItem(
@@ -656,7 +704,7 @@ private fun LoginQrScreen(
                         "Téléphone indisponible",
                         "Smartphone nicht verfügbar",
                     ),
-                value = message,
+                value = localizedUserMessage(state, message),
                 valueColor = TailwarePalette.Warning,
             )
           }
@@ -664,9 +712,9 @@ private fun LoginQrScreen(
         item {
           Box(
               modifier =
-                  Modifier.size(if (small) 116.dp else 138.dp)
+                  Modifier.size(if (small) 132.dp else 156.dp)
                       .background(Color.White, RoundedCornerShape(12.dp))
-                      .padding(7.dp),
+                      .padding(8.dp),
               contentAlignment = Alignment.Center,
           ) {
             Image(
@@ -732,7 +780,7 @@ private fun LoginQrScreen(
                         "The previous link will no longer be shown",
                         "De vorige link wordt niet meer getoond",
                         "L’ancien lien ne sera plus affiché",
-                        "Der vorige Link wird nicht mehr angezeigt",
+                        "Der vorherige Link wird nicht mehr angezeigt",
                     ),
                 onClick = onRetry,
             )
@@ -962,7 +1010,7 @@ private fun DashboardScreen(
     state.healthWarnings.firstOrNull()?.let { warning ->
       item {
         TailwareChip(
-            label = warning.title,
+            label = localizedHealthTitle(state, warning),
             secondary =
                 tr(
                     state,
@@ -989,7 +1037,14 @@ private fun DashboardScreen(
                     "Configuration VPN requise",
                     "VPN-Einrichtung nötig",
                 ),
-            secondary = "One-time ADB authorization",
+            secondary =
+                tr(
+                    state,
+                    "One-time ADB authorization",
+                    "Eenmalige ADB-toestemming",
+                    "Autorisation ADB unique",
+                    "Einmalige ADB-Freigabe",
+                ),
             onClick = onVpnSetup,
         )
       }
@@ -1105,8 +1160,8 @@ private fun HealthScreen(state: WearUiState) {
         } else {
           items(state.healthWarnings, key = { it.code }) { warning ->
             TailwareInfo(
-                label = warning.title,
-                value = warning.message,
+                label = localizedHealthTitle(state, warning),
+                value = localizedHealthMessage(state, warning),
                 valueColor =
                     if (warning.severity == WearHealthSeverity.High) TailwarePalette.Danger
                     else TailwarePalette.Warning,
@@ -1149,8 +1204,9 @@ private fun DevicesScreen(
           }
         }
         items(state.peers, key = { it.stableId }) { peer ->
+          val effectivelyOnline = peerIsEffectivelyOnline(state, peer)
           val status =
-              if (peer.online) tr(state, "Online", "Online", "En ligne", "Online")
+              if (effectivelyOnline) tr(state, "Online", "Online", "En ligne", "Online")
               else tr(state, "Offline", "Offline", "Hors ligne", "Offline")
           TailwareChip(
               label =
@@ -1174,6 +1230,7 @@ private fun DeviceScreen(
     onDismissError: () -> Unit,
 ) {
   val pingResult = state.pingResult.takeIf { it.peerId == peer?.stableId }
+  val effectivelyOnline = peer?.let { peerIsEffectivelyOnline(state, it) } == true
   TailwareListScreen(
       title = peer?.displayName ?: tr(state, "Device", "Apparaat", "Appareil", "Gerät")) {
         errorItem(state, onDismissError)
@@ -1199,9 +1256,9 @@ private fun DeviceScreen(
           TailwareInfo(
               label = tr(state, "Status", "Status", "État", "Status"),
               value =
-                  if (peer.online) tr(state, "Online", "Online", "En ligne", "Online")
+                  if (effectivelyOnline) tr(state, "Online", "Online", "En ligne", "Online")
                   else tr(state, "Offline", "Offline", "Hors ligne", "Offline"),
-              valueColor = if (peer.online) TailwarePalette.Signal else TailwarePalette.Muted,
+              valueColor = if (effectivelyOnline) TailwarePalette.Signal else TailwarePalette.Muted,
           )
         }
         peer.ipv4?.let { item { TailwareInfo(label = "IPV4", value = it, mono = true) } }
@@ -1229,7 +1286,9 @@ private fun DeviceScreen(
                         "Tailnet-Latenz messen",
                     ),
                 onClick = onPing,
-                enabled = pingResult?.status != PingStatus.Running,
+                enabled =
+                    state.tunnelStatus == WearTunnelStatus.Connected &&
+                        pingResult?.status != PingStatus.Running,
                 accent = true,
             )
           }
@@ -1265,7 +1324,7 @@ private fun DeviceScreen(
                               "Ping mislukt",
                               "Échec du ping",
                               "Ping fehlgeschlagen"),
-                      secondary = pingResult?.error,
+                      secondary = pingResult?.error?.let { localizedUserMessage(state, it) },
                       onClick = onClearPing,
                   )
                 }
@@ -1377,10 +1436,18 @@ private fun SettingsScreen(
     onDismissError: () -> Unit,
 ) {
   var confirmLogout by remember { mutableStateOf(false) }
+  var logoutReady by remember { mutableStateOf(false) }
   LaunchedEffect(confirmLogout) {
     if (confirmLogout) {
-      delay(10_000)
+      logoutReady = false
+      delay(700)
+      if (!confirmLogout) return@LaunchedEffect
+      logoutReady = true
+      delay(9_300)
       confirmLogout = false
+      logoutReady = false
+    } else {
+      logoutReady = false
     }
   }
   TailwareListScreen(
@@ -1392,7 +1459,11 @@ private fun SettingsScreen(
               "Paramètres",
               "Einstellungen",
           )) {
-        errorItem(state, onDismissError)
+        errorItem(
+            state,
+            onDismissError,
+            excludedOperations = setOf(WearAction.Logout),
+        )
         item {
           TailwareChip(
               label = tr(state, "Language", "Taal", "Langue", "Sprache"),
@@ -1408,7 +1479,10 @@ private fun SettingsScreen(
               checked =
                   state.accountState == WearAccountState.SignedIn && state.tailscaleDnsEnabled,
               onCheckedChange = { onToggleDns() },
-              enabled = state.accountState == WearAccountState.SignedIn && state.busyAction == null,
+              enabled =
+                  state.accountState == WearAccountState.SignedIn &&
+                      state.tailscaleSettingsReady &&
+                      state.busyAction == null,
           )
         }
         item {
@@ -1416,10 +1490,10 @@ private fun SettingsScreen(
               label =
                   tr(
                       state,
-                      "Optional notifications",
-                      "Optionele meldingen",
-                      "Notifications facultatives",
-                      "Optionale Benachrichtigungen",
+                      "Disconnected notification",
+                      "Melding bij verbroken verbinding",
+                      "Notification de déconnexion",
+                      "Hinweis bei Trennung",
                   ),
               secondary =
                   if (state.optionalNotificationsBlockedBySystem)
@@ -1433,10 +1507,10 @@ private fun SettingsScreen(
                   else
                       tr(
                           state,
-                          "System permission is one-time; this controls Tailware alerts",
-                          "Systeemtoestemming is eenmalig; dit regelt Tailware-meldingen",
-                          "L’autorisation système est unique; ceci règle les alertes Tailware",
-                          "Systemfreigabe ist einmalig; dies steuert Tailware-Meldungen",
+                          "Optional; Android still shows the active VPN notification",
+                          "Optioneel; Android toont de actieve VPN-melding altijd",
+                          "Facultatif ; Android garde la notification VPN active",
+                          "Optional; Android zeigt die aktive VPN-Meldung weiterhin",
                       ),
               checked = state.optionalNotificationsEnabled,
               onCheckedChange = onSetNotifications,
@@ -1457,11 +1531,11 @@ private fun SettingsScreen(
               onClick = onTile,
           )
         }
-        state.profileDisplayName?.let {
+        state.profileDisplayName?.let { account ->
           item {
             TailwareInfo(
                 label = tr(state, "Account", "Account", "Compte", "Konto"),
-                value = it,
+                value = account,
             )
           }
         }
@@ -1483,6 +1557,11 @@ private fun SettingsScreen(
             )
           }
         }
+        errorItem(
+            state,
+            onDismissError,
+            operations = setOf(WearAction.Logout),
+        )
         item {
           TailwareChip(
               label =
@@ -1501,10 +1580,10 @@ private fun SettingsScreen(
                           com.tailscale.ipn.UnderlyingNetworkStatus.Online)
                           tr(
                               state,
-                              "Reconnect to the internet before the final tap",
-                              "Herstel internet vóór de laatste tik",
-                              "Rétablissez internet avant la dernière pression",
-                              "Vor dem letzten Tippen Internet wiederherstellen",
+                              "Signs out locally; the old admin entry may remain",
+                              "Meldt lokaal af; de oude beheerinvoer kan blijven staan",
+                              "Déconnexion locale ; l’ancienne entrée admin peut rester",
+                              "Meldet lokal ab; der alte Admin-Eintrag kann bestehen bleiben",
                           )
                       else
                           tr(
@@ -1516,14 +1595,18 @@ private fun SettingsScreen(
                           )
                   else state.profileDisplayName,
               onClick = {
-                if (confirmLogout) {
+                if (confirmLogout && logoutReady) {
                   confirmLogout = false
+                  logoutReady = false
                   onLogout()
-                } else {
+                } else if (!confirmLogout) {
                   confirmLogout = true
                 }
               },
-              enabled = state.accountState == WearAccountState.SignedIn && state.busyAction == null,
+              enabled =
+                  state.accountState == WearAccountState.SignedIn &&
+                      state.busyAction == null &&
+                      (!confirmLogout || logoutReady),
               accent = confirmLogout,
           )
         }
@@ -1724,6 +1807,7 @@ private fun TileSettingsScreen(
 private fun VpnSetupScreen(
     state: WearUiState,
     onRetry: () -> Unit,
+    onContinueWithoutVpn: (() -> Unit)?,
     onDismissError: () -> Unit,
 ) {
   TailwareListScreen(
@@ -1795,8 +1879,16 @@ private fun VpnSetupScreen(
           }
           item {
             TailwareInfo(
-                label = "POWERSHELL",
+                label = "WINDOWS",
                 value = ".\\tools\\authorize-wear-vpn.ps1",
+                mono = true,
+                valueColor = TailwarePalette.Signal,
+            )
+          }
+          item {
+            TailwareInfo(
+                label = "MACOS / LINUX",
+                value = "./tools/authorize-wear-vpn.sh",
                 mono = true,
                 valueColor = TailwarePalette.Signal,
             )
@@ -1828,6 +1920,29 @@ private fun VpnSetupScreen(
                     ),
                 onClick = onRetry,
             )
+          }
+          onContinueWithoutVpn?.let { continueWithoutVpn ->
+            item {
+              TailwareChip(
+                  label =
+                      tr(
+                          state,
+                          "Sign in without VPN yet",
+                          "Aanmelden zonder VPN",
+                          "Se connecter sans VPN",
+                          "Noch ohne VPN anmelden",
+                      ),
+                  secondary =
+                      tr(
+                          state,
+                          "ADB authorization is still required before connecting",
+                          "ADB-toestemming blijft nodig vóór je kunt verbinden",
+                          "L’autorisation ADB reste requise avant la connexion",
+                          "Vor dem Verbinden ist weiterhin eine ADB-Freigabe nötig",
+                      ),
+                  onClick = continueWithoutVpn,
+              )
+            }
           }
         }
       }
@@ -1873,13 +1988,20 @@ private fun androidx.wear.compose.foundation.lazy.ScalingLazyListScope.errorItem
     state: WearUiState,
     onDismiss: () -> Unit,
     origins: Set<WearErrorOrigin> = setOf(WearErrorOrigin.Global),
+    operations: Set<WearAction>? = null,
+    excludedOperations: Set<WearAction> = emptySet(),
 ) {
   state.error
-      ?.takeIf { it.origin in origins }
+      ?.takeIf {
+        val operation = it.operation
+        it.origin in origins &&
+            (operations == null || (operation != null && operation in operations)) &&
+            (operation == null || operation !in excludedOperations)
+      }
       ?.let { error ->
         item {
           TailwareErrorChip(
-              message = error.message,
+              message = localizedUserMessage(state, error.message),
               dismissLabel =
                   tr(
                       state,
@@ -1894,12 +2016,447 @@ private fun androidx.wear.compose.foundation.lazy.ScalingLazyListScope.errorItem
       }
 }
 
+internal fun peerIsEffectivelyOnline(state: WearUiState, peer: WearPeer): Boolean =
+    state.tunnelStatus == WearTunnelStatus.Connected && (peer.isSelf || peer.online)
+
+private fun localizedHealthTitle(state: WearUiState, warning: WearHealthWarning): String =
+    when (warning.code) {
+      "tailware-underlay-offline" ->
+          tr(
+              state,
+              "No internet connection",
+              "Geen internetverbinding",
+              "Aucune connexion Internet",
+              "Keine Internetverbindung",
+          )
+      "tailware-underlay-limited" ->
+          tr(
+              state,
+              "Internet not verified",
+              "Internet niet geverifieerd",
+              "Internet non vérifié",
+              "Internet nicht bestätigt",
+          )
+      "tailware-exit-node-offline" ->
+          tr(
+              state,
+              "Exit node unavailable",
+              "Exit node niet beschikbaar",
+              "Nœud de sortie indisponible",
+              "Exit-Node nicht verfügbar",
+          )
+      else ->
+          when (state.language) {
+            TailwareLanguage.English -> "Tailscale warning: ${warning.title}"
+            TailwareLanguage.Dutch -> "Tailscale-waarschuwing: ${warning.title}"
+            TailwareLanguage.French -> "Avertissement Tailscale : ${warning.title}"
+            TailwareLanguage.German -> "Tailscale-Warnung: ${warning.title}"
+            TailwareLanguage.Russian -> "Предупреждение Tailscale: ${warning.title}"
+          }
+    }
+
+private fun localizedHealthMessage(state: WearUiState, warning: WearHealthWarning): String =
+    when (warning.code) {
+      "tailware-underlay-offline" ->
+          tr(
+              state,
+              "The Tailware tunnel is still present, but this watch has no internet connection.",
+              "De Tailware-tunnel bestaat nog, maar dit horloge heeft geen internetverbinding.",
+              "Le tunnel Tailware est toujours présent, mais cette montre n’a pas de connexion Internet.",
+              "Der Tailware-Tunnel besteht noch, aber diese Uhr hat keine Internetverbindung.",
+          )
+      "tailware-underlay-limited" ->
+          tr(
+              state,
+              "Android sees a network, but has not verified that it can reach the internet.",
+              "Android ziet een netwerk, maar heeft internettoegang niet kunnen bevestigen.",
+              "Android détecte un réseau, mais n’a pas confirmé l’accès à Internet.",
+              "Android erkennt ein Netzwerk, konnte den Internetzugang aber nicht bestätigen.",
+          )
+      "tailware-exit-node-offline" -> {
+        val nodeName =
+            warning.message.substringBefore(" is still selected").ifBlank {
+              tr(state, "Exit node", "Exit node", "Nœud de sortie", "Exit-Node")
+            }
+        when (state.language) {
+          TailwareLanguage.English ->
+              "$nodeName is still selected but is offline or missing. Disable it or choose another exit node."
+          TailwareLanguage.Dutch ->
+              "$nodeName is nog geselecteerd, maar is offline of ontbreekt. Schakel die uit of kies een andere exit node."
+          TailwareLanguage.French ->
+              "$nodeName est toujours sélectionné, mais est hors ligne ou absent. Désactivez-le ou choisissez un autre nœud de sortie."
+          TailwareLanguage.German ->
+              "$nodeName ist noch ausgewählt, aber offline oder nicht verfügbar. Deaktiviere ihn oder wähle einen anderen Exit-Node."
+          TailwareLanguage.Russian ->
+              "$nodeName всё ещё выбран, но не в сети или недоступен. Отключите его или выберите другой выходной узел."
+        }
+      }
+      else ->
+          when (state.language) {
+            TailwareLanguage.English -> "Tailscale reported: ${warning.message}"
+            TailwareLanguage.Dutch -> "Tailscale meldt: ${warning.message}"
+            TailwareLanguage.French -> "Tailscale signale : ${warning.message}"
+            TailwareLanguage.German -> "Tailscale meldet: ${warning.message}"
+            TailwareLanguage.Russian -> "Tailscale сообщает: ${warning.message}"
+          }
+    }
+
+private fun localizedUserMessage(state: WearUiState, rawMessage: String): String {
+  val normalized = rawMessage.replace(Regex("\\s+"), " ").trim()
+  localizedPingError(state, normalized)?.let {
+    return it
+  }
+  return when {
+    normalized.startsWith("Could not open the sign-in page on the paired phone:") ->
+        tr(
+            state,
+            "Could not open sign-in on the paired phone. Keep it nearby and unlocked.",
+            "Aanmelden kon niet op de gekoppelde telefoon worden geopend. Houd die dichtbij en ontgrendeld.",
+            "Impossible d’ouvrir la connexion sur le téléphone associé. Gardez-le proche et déverrouillé.",
+            "Die Anmeldung konnte nicht auf dem gekoppelten Smartphone geöffnet werden. Halte es in der Nähe und entsperrt.",
+        )
+    normalized.startsWith("Tailware could not safely close the previous sign-in attempt:") -> {
+      val detail = normalized.substringAfter(':').trim()
+      when (state.language) {
+        TailwareLanguage.English ->
+            "Tailware could not safely close the previous sign-in attempt: $detail"
+        TailwareLanguage.Dutch ->
+            "Tailware kon de vorige aanmeldpoging niet veilig afsluiten: $detail"
+        TailwareLanguage.French ->
+            "Tailware n’a pas pu fermer en sécurité la tentative précédente : $detail"
+        TailwareLanguage.German ->
+            "Tailware konnte den vorherigen Anmeldeversuch nicht sicher schließen: $detail"
+        TailwareLanguage.Russian ->
+            "Tailware не удалось безопасно завершить предыдущую попытку входа: $detail"
+      }
+    }
+    normalized == "The authentication key could not be checked because the watch is offline." ->
+        tr(
+            state,
+            "The key cannot be checked while the watch is offline.",
+            "De sleutel kan niet worden gecontroleerd terwijl het horloge offline is.",
+            "La clé ne peut pas être vérifiée tant que la montre est hors ligne.",
+            "Der Schlüssel kann nicht geprüft werden, solange die Uhr offline ist.",
+        )
+    normalized.startsWith("Authentication failed:") ->
+        tr(
+            state,
+            "Authentication failed. Check that the Tailscale key is valid and not expired.",
+            "Authenticatie mislukt. Controleer of de Tailscale-sleutel geldig en niet verlopen is.",
+            "Échec de l’authentification. Vérifiez que la clé Tailscale est valide et non expirée.",
+            "Authentifizierung fehlgeschlagen. Prüfe, ob der Tailscale-Schlüssel gültig und nicht abgelaufen ist.",
+        )
+    normalized ==
+        "The authentication key could not be verified. Check that it is valid and try again." ->
+        tr(
+            state,
+            "The key was not accepted. Check it and try again.",
+            "De sleutel werd niet aanvaard. Controleer hem en probeer opnieuw.",
+            "La clé n’a pas été acceptée. Vérifiez-la et réessayez.",
+            "Der Schlüssel wurde nicht akzeptiert. Prüfe ihn und versuche es erneut.",
+        )
+    normalized.startsWith("The custom server refused the sign-in request:") ->
+        tr(
+            state,
+            "The custom server refused sign-in. Check its address and account settings.",
+            "De aangepaste server weigerde de aanmelding. Controleer het adres en de accountinstellingen.",
+            "Le serveur personnalisé a refusé la connexion. Vérifiez son adresse et le compte.",
+            "Der benutzerdefinierte Server hat die Anmeldung abgelehnt. Prüfe Adresse und Konto.",
+        )
+    normalized ==
+        "The custom server is taking too long to answer. Check its address and connection." ->
+        tr(
+            state,
+            "The custom server is not responding. Check its address and connection.",
+            "De aangepaste server antwoordt niet. Controleer het adres en de verbinding.",
+            "Le serveur personnalisé ne répond pas. Vérifiez son adresse et la connexion.",
+            "Der benutzerdefinierte Server antwortet nicht. Prüfe Adresse und Verbindung.",
+        )
+    normalized.startsWith("Tailscale could not start sign-in:") ->
+        tr(
+            state,
+            "Tailscale could not start sign-in. Check the watch connection.",
+            "Tailscale kon het aanmelden niet starten. Controleer de verbinding van het horloge.",
+            "Tailscale n’a pas pu lancer la connexion. Vérifiez la connexion de la montre.",
+            "Tailscale konnte die Anmeldung nicht starten. Prüfe die Verbindung der Uhr.",
+        )
+    normalized == "Tailscale sign-in is taking longer than expected. Check the watch connection." ->
+        tr(
+            state,
+            "Tailscale sign-in is taking too long. Check the watch connection.",
+            "Aanmelden bij Tailscale duurt te lang. Controleer de verbinding van het horloge.",
+            "La connexion Tailscale prend trop de temps. Vérifiez la connexion de la montre.",
+            "Die Tailscale-Anmeldung dauert zu lange. Prüfe die Verbindung der Uhr.",
+        )
+    normalized == "The operation is taking longer than expected." ->
+        tr(
+            state,
+            "This is taking too long. Check the connection and try again.",
+            "Dit duurt te lang. Controleer de verbinding en probeer opnieuw.",
+            "L’opération prend trop de temps. Vérifiez la connexion et réessayez.",
+            "Das dauert zu lange. Prüfe die Verbindung und versuche es erneut.",
+        )
+    normalized ==
+        "Tailware could not restore the VPN automatically. Tap the connection control to retry." ->
+        tr(
+            state,
+            "Tailware could not restore the VPN automatically. Tap the connection control to retry.",
+            "Tailware kon de VPN niet automatisch herstellen. Tik op de verbindingsknop om opnieuw te proberen.",
+            "Tailware n’a pas pu rétablir le VPN automatiquement. Touchez la commande de connexion pour réessayer.",
+            "Tailware konnte das VPN nicht automatisch wiederherstellen. Tippe zum Wiederholen auf die Verbindungssteuerung.",
+        )
+    normalized == "Connect a Tailware account before starting the VPN." ->
+        tr(
+            state,
+            "Connect a Tailware account before starting the VPN.",
+            "Verbind eerst een Tailware-account voordat je de VPN start.",
+            "Connectez un compte Tailware avant de démarrer le VPN.",
+            "Verbinde vor dem VPN-Start ein Tailware-Konto.",
+        )
+    normalized == "VPN authorization is required before Tailware can connect." ->
+        tr(
+            state,
+            "VPN authorization is required before Tailware can connect.",
+            "VPN-toestemming is nodig voordat Tailware kan verbinden.",
+            "L’autorisation VPN est requise avant la connexion de Tailware.",
+            "Vor der Tailware-Verbindung ist eine VPN-Freigabe nötig.",
+        )
+    normalized == "Android did not allow Tailware to start the VPN service." ->
+        tr(
+            state,
+            "Android did not allow Tailware to start the VPN service.",
+            "Android stond Tailware niet toe de VPN-service te starten.",
+            "Android n’a pas autorisé Tailware à démarrer le service VPN.",
+            "Android hat Tailware den Start des VPN-Dienstes nicht erlaubt.",
+        )
+    normalized == "Android did not allow Tailware to stop the VPN service." ->
+        tr(
+            state,
+            "Android did not allow Tailware to stop the VPN service.",
+            "Android stond Tailware niet toe de VPN-service te stoppen.",
+            "Android n’a pas autorisé Tailware à arrêter le service VPN.",
+            "Android hat Tailware das Stoppen des VPN-Dienstes nicht erlaubt.",
+        )
+    normalized == "Enter an authentication key." ->
+        tr(
+            state,
+            "Enter an authentication key.",
+            "Voer een authenticatiesleutel in.",
+            "Saisissez une clé d’authentification.",
+            "Gib einen Authentifizierungsschlüssel ein.",
+        )
+    normalized == "Enter a valid HTTPS control server URL." ->
+        tr(
+            state,
+            "Enter a valid HTTPS control server URL.",
+            "Voer een geldige HTTPS-URL voor de controlserver in.",
+            "Saisissez une URL HTTPS valide pour le serveur de contrôle.",
+            "Gib eine gültige HTTPS-URL des Control-Servers ein.",
+        )
+    normalized == "Account details are still loading. Wait a moment and try signing out again." ->
+        tr(
+            state,
+            "Account details are still loading. Wait a moment and try signing out again.",
+            "De accountgegevens worden nog geladen. Wacht even en probeer opnieuw af te melden.",
+            "Les informations du compte se chargent encore. Patientez puis réessayez.",
+            "Die Kontodaten werden noch geladen. Warte kurz und versuche die Abmeldung erneut.",
+        )
+    normalized ==
+        "Signed out locally while offline. Tailscale could not be notified; the old device entry may remain in the admin console until it is removed or expires." ->
+        tr(
+            state,
+            "Signed out locally while offline. Tailscale was not notified; the old device entry may remain in the admin console.",
+            "Lokaal afgemeld terwijl je offline was. Tailscale kreeg geen melding; de oude apparaatvermelding kan in de beheerconsole blijven staan.",
+            "Déconnexion locale hors ligne. Tailscale n’a pas été informé ; l’ancien appareil peut rester dans la console d’administration.",
+            "Offline lokal abgemeldet. Tailscale wurde nicht informiert; der alte Geräteeintrag kann in der Admin-Konsole bestehen bleiben.",
+        )
+    normalized == "Sign in before changing Tailscale DNS." ->
+        tr(
+            state,
+            "Sign in before changing Tailscale DNS.",
+            "Meld je aan voordat je Tailscale DNS wijzigt.",
+            "Connectez-vous avant de modifier le DNS Tailscale.",
+            "Melde dich an, bevor du Tailscale DNS änderst.",
+        )
+    normalized == "Tailscale settings are still loading. Wait a moment and try again." ->
+        tr(
+            state,
+            "Tailscale settings are still loading. Wait a moment and try again.",
+            "De Tailscale-instellingen worden nog geladen. Wacht even en probeer opnieuw.",
+            "Les paramètres Tailscale se chargent encore. Patientez puis réessayez.",
+            "Die Tailscale-Einstellungen werden noch geladen. Warte kurz und versuche es erneut.",
+        )
+    normalized == "Tailscale preferences are not available yet." ->
+        tr(
+            state,
+            "Tailscale preferences are not available yet.",
+            "De Tailscale-voorkeuren zijn nog niet beschikbaar.",
+            "Les préférences Tailscale ne sont pas encore disponibles.",
+            "Die Tailscale-Einstellungen sind noch nicht verfügbar.",
+        )
+    normalized == "Select an exit node before enabling LAN access." ->
+        tr(
+            state,
+            "Select an exit node before enabling LAN access.",
+            "Selecteer een exit node voordat je LAN-toegang inschakelt.",
+            "Sélectionnez un nœud de sortie avant d’activer l’accès LAN.",
+            "Wähle einen Exit-Node, bevor du den LAN-Zugriff aktivierst.",
+        )
+    normalized == "The selected exit node is no longer available." ->
+        tr(
+            state,
+            "The selected exit node is no longer available.",
+            "De geselecteerde exit node is niet meer beschikbaar.",
+            "Le nœud de sortie sélectionné n’est plus disponible.",
+            "Der ausgewählte Exit-Node ist nicht mehr verfügbar.",
+        )
+    normalized == "The selected exit node is offline." ->
+        tr(
+            state,
+            "The selected exit node is offline.",
+            "De geselecteerde exit node is offline.",
+            "Le nœud de sortie sélectionné est hors ligne.",
+            "Der ausgewählte Exit-Node ist offline.",
+        )
+    normalized ==
+        "Connect Tailware first. Device ping is available only while the VPN tunnel is fully connected." ->
+        tr(
+            state,
+            "Connect Tailware first. Device ping is available only while the VPN tunnel is fully connected.",
+            "Verbind Tailware eerst. Pingen werkt alleen wanneer de VPN-tunnel volledig verbonden is.",
+            "Connectez d’abord Tailware. Le ping est disponible uniquement quand le tunnel VPN est entièrement connecté.",
+            "Verbinde zuerst Tailware. Ping ist nur bei vollständig verbundenem VPN-Tunnel verfügbar.",
+        )
+    normalized == "The selected device is no longer available." ->
+        tr(
+            state,
+            "The selected device is no longer available.",
+            "Het geselecteerde apparaat is niet meer beschikbaar.",
+            "L’appareil sélectionné n’est plus disponible.",
+            "Das ausgewählte Gerät ist nicht mehr verfügbar.",
+        )
+    normalized == "This is this watch; a self-ping does not test a network path." ->
+        tr(
+            state,
+            "This is this watch; a self-ping does not test a network path.",
+            "Dit is dit horloge; jezelf pingen test geen netwerkpad.",
+            "Il s’agit de cette montre ; un auto-ping ne teste aucun trajet réseau.",
+            "Das ist diese Uhr; ein Selbst-Ping testet keinen Netzwerkpfad.",
+        )
+    normalized == "This device has no IPv4 address to ping." ->
+        tr(
+            state,
+            "This device has no IPv4 address to ping.",
+            "Dit apparaat heeft geen IPv4-adres om te pingen.",
+            "Cet appareil n’a pas d’adresse IPv4 à tester.",
+            "Dieses Gerät hat keine IPv4-Adresse für den Ping.",
+        )
+    normalized ==
+        "Sign-in succeeded, but the one-time VPN authorization is still required before Tailware can connect." ->
+        tr(
+            state,
+            "Sign-in succeeded, but the one-time VPN authorization is still required before Tailware can connect.",
+            "Aanmelden is gelukt, maar de eenmalige VPN-toestemming is nog nodig voordat Tailware kan verbinden.",
+            "Connexion réussie, mais l’autorisation VPN unique reste nécessaire avant que Tailware puisse se connecter.",
+            "Die Anmeldung war erfolgreich, aber vor der Tailware-Verbindung ist noch die einmalige VPN-Freigabe nötig.",
+        )
+    normalized ==
+        "Sign-in succeeded, but Android did not allow Tailware to start the VPN service." ->
+        tr(
+            state,
+            "Sign-in succeeded, but Android did not allow Tailware to start the VPN service.",
+            "Aanmelden is gelukt, maar Android stond Tailware niet toe de VPN-service te starten.",
+            "Connexion réussie, mais Android n’a pas autorisé Tailware à démarrer le service VPN.",
+            "Die Anmeldung war erfolgreich, aber Android hat Tailware den Start des VPN-Dienstes nicht erlaubt.",
+        )
+    normalized ==
+        "Internet was lost before sign-out could be verified. The local account was kept." ->
+        tr(
+            state,
+            "Internet was lost before sign-out could be verified. The local account was kept.",
+            "De internetverbinding viel weg voordat afmelden kon worden gecontroleerd. Het lokale account bleef behouden.",
+            "Internet a été perdu avant la vérification de la déconnexion. Le compte local a été conservé.",
+            "Die Internetverbindung ging vor der Abmeldeprüfung verloren. Das lokale Konto wurde behalten.",
+        )
+    normalized == "Remote sign-out could not be verified. The local account was kept." ->
+        tr(
+            state,
+            "Remote sign-out could not be verified. The local account was kept.",
+            "Afmelden op afstand kon niet worden gecontroleerd. Het lokale account bleef behouden.",
+            "La déconnexion distante n’a pas pu être vérifiée. Le compte local a été conservé.",
+            "Die Remote-Abmeldung konnte nicht geprüft werden. Das lokale Konto wurde behalten.",
+        )
+    normalized == "Tailware could not verify that the local account was removed." ->
+        tr(
+            state,
+            "Tailware could not verify that the local account was removed.",
+            "Tailware kon niet controleren of het lokale account was verwijderd.",
+            "Tailware n’a pas pu vérifier la suppression du compte local.",
+            "Tailware konnte nicht prüfen, ob das lokale Konto entfernt wurde.",
+        )
+    else ->
+        when (state.language) {
+          TailwareLanguage.English -> normalized
+          TailwareLanguage.Dutch -> "Technische fout: $normalized"
+          TailwareLanguage.French -> "Erreur technique : $normalized"
+          TailwareLanguage.German -> "Technischer Fehler: $normalized"
+          TailwareLanguage.Russian -> "Техническая ошибка: $normalized"
+        }
+  }
+}
+
+private fun localizedPingError(state: WearUiState, message: String): String? {
+  val match = PING_RESULT_PATTERN.matchEntire(message) ?: return null
+  val peerName = match.groupValues[1]
+  val address = match.groupValues[2]
+  val outcome = match.groupValues[3]
+  if (outcome.startsWith("timed out.")) {
+    return when (state.language) {
+      TailwareLanguage.English ->
+          "Ping to $peerName ($address) timed out. The device may be asleep, offline or unreachable."
+      TailwareLanguage.Dutch ->
+          "Ping naar $peerName ($address) duurde te lang. Het apparaat slaapt mogelijk, is offline of onbereikbaar."
+      TailwareLanguage.French ->
+          "Le ping vers $peerName ($address) a expiré. L’appareil est peut-être en veille, hors ligne ou inaccessible."
+      TailwareLanguage.German ->
+          "Ping an $peerName ($address) hat das Zeitlimit überschritten. Das Gerät schläft möglicherweise, ist offline oder nicht erreichbar."
+      TailwareLanguage.Russian ->
+          "Время ping до $peerName ($address) истекло. Устройство может спать, быть не в сети или недоступно."
+    }
+  }
+
+  val detail =
+      outcome.removePrefix("failed").removePrefix(":").trim().takeUnless {
+        it.isBlank() || it.startsWith("without a diagnostic from the Tailscale backend")
+      }
+  return when (state.language) {
+    TailwareLanguage.English ->
+        detail?.let { "Ping to $peerName ($address) failed: $it" }
+            ?: "Ping to $peerName ($address) failed without a diagnostic from Tailscale."
+    TailwareLanguage.Dutch ->
+        detail?.let { "Ping naar $peerName ($address) mislukt: $it" }
+            ?: "Ping naar $peerName ($address) mislukte zonder diagnose van Tailscale."
+    TailwareLanguage.French ->
+        detail?.let { "Échec du ping vers $peerName ($address) : $it" }
+            ?: "Échec du ping vers $peerName ($address), sans diagnostic de Tailscale."
+    TailwareLanguage.German ->
+        detail?.let { "Ping an $peerName ($address) fehlgeschlagen: $it" }
+            ?: "Ping an $peerName ($address) ohne Tailscale-Diagnose fehlgeschlagen."
+    TailwareLanguage.Russian ->
+        detail?.let { "Ping до $peerName ($address) не выполнен: $it" }
+            ?: "Ping до $peerName ($address) не выполнен без диагностики Tailscale."
+  }
+}
+
+private val PING_RESULT_PATTERN = Regex("^Ping to (.+) \\(([^)]+)\\) (timed out\\..*|failed.*)$")
+
 private fun languageName(language: TailwareLanguage): String =
     when (language) {
       TailwareLanguage.English -> "English"
       TailwareLanguage.Dutch -> "Nederlands"
       TailwareLanguage.French -> "Français"
       TailwareLanguage.German -> "Deutsch"
+      TailwareLanguage.Russian -> "Русский"
     }
 
 private fun formatKeyExpiry(state: WearUiState, rawExpiry: String?): String {
@@ -1946,4 +2503,213 @@ private fun tr(
       TailwareLanguage.Dutch -> dutch
       TailwareLanguage.French -> french
       TailwareLanguage.German -> german
+      TailwareLanguage.Russian -> russianTranslation(english)
     }
+
+private fun russianTranslation(english: String): String =
+    when {
+      english.endsWith(" devices in your tailnet") -> {
+        val count = english.substringBefore(" devices in your tailnet").toIntOrNull()
+        if (count == null) {
+          "Устройства в вашей сети"
+        } else {
+          val plural =
+              if (count % 100 in 11..14) {
+                "устройств"
+              } else {
+                when (count % 10) {
+                  1 -> "устройство"
+                  2,
+                  3,
+                  4 -> "устройства"
+                  else -> "устройств"
+                }
+              }
+          "$count $plural в вашей сети"
+        }
+      }
+      english.startsWith("Expired on ") -> english.replace("Expired on ", "Истёк: ")
+      english.startsWith("Expires on ") -> english.replace("Expires on ", "Истекает: ")
+      else -> RUSSIAN_TRANSLATIONS[english] ?: "Недоступно"
+    }
+
+private val RUSSIAN_TRANSLATIONS =
+    mapOf(
+        "About Tailware" to "О Tailware",
+        "Account" to "Аккаунт",
+        "Account details are still loading. Wait a moment and try signing out again." to
+            "Данные аккаунта ещё загружаются. Подождите и повторите выход.",
+        "ADB authorization is still required before connecting" to
+            "Перед подключением всё ещё требуется авторизация ADB",
+        "Active" to "Активен",
+        "Allow LAN access" to "Разрешить доступ к LAN",
+        "Android did not allow Tailware to start the VPN service." to
+            "Android не разрешил Tailware запустить службу VPN.",
+        "Android did not allow Tailware to stop the VPN service." to
+            "Android не разрешил Tailware остановить службу VPN.",
+        "Android sees a network, but has not verified that it can reach the internet." to
+            "Android видит сеть, но не подтвердил доступ к интернету.",
+        "Approval required" to "Требуется подтверждение",
+        "Approve this watch in the admin console." to
+            "Подтвердите эти часы в консоли администратора.",
+        "Authentication failed. Check that the Tailscale key is valid and not expired." to
+            "Ошибка аутентификации. Проверьте, что ключ Tailscale действителен и не истёк.",
+        "Authentication key" to "Ключ аутентификации",
+        "Authorization" to "Авторизация",
+        "Blocked in Android settings" to "Заблокировано в настройках Android",
+        "BSD 3-Clause license" to "Лицензия BSD 3-Clause",
+        "Cancel sign-in" to "Отменить вход",
+        "Choose what the compact Tile shows and what a tap does." to
+            "Выберите данные компактной плитки и действие по нажатию.",
+        "Confirm sign out" to "Подтвердить выход",
+        "Connect" to "Подключить",
+        "Connect account" to "Подключить аккаунт",
+        "Connect a Tailware account before starting the VPN." to
+            "Подключите аккаунт Tailware перед запуском VPN.",
+        "Connect server" to "Подключить сервер",
+        "Connect Tailware first. Device ping is available only while the VPN tunnel is fully connected." to
+            "Сначала подключите Tailware. Ping доступен только при полностью подключённом VPN-туннеле.",
+        "Connected" to "Подключено",
+        "Connecting…" to "Подключение…",
+        "Connection health" to "Состояние подключения",
+        "Contacting the paired phone" to "Связь с сопряжённым телефоном",
+        "Continue on phone" to "Продолжить на телефоне",
+        "Could not open sign-in on the paired phone. Keep it nearby and unlocked." to
+            "Не удалось открыть вход на сопряжённом телефоне. Держите его рядом и разблокированным.",
+        "Creating a secure login…" to "Создание защищённого входа…",
+        "Device" to "Устройство",
+        "Device key" to "Ключ устройства",
+        "Disable active exit node" to "Отключить активный выходной узел",
+        "Disconnect" to "Отключить",
+        "Disconnected" to "Отключено",
+        "Disconnected notification" to "Уведомление об отключении",
+        "Disconnecting…" to "Отключение…",
+        "Does not expire" to "Не истекает",
+        "Enter a control server URL" to "Введите URL управляющего сервера",
+        "Enter a valid HTTPS control server URL." to
+            "Введите корректный HTTPS-URL управляющего сервера.",
+        "Enter an authentication key." to "Введите ключ аутентификации.",
+        "Exit node" to "Выходной узел",
+        "Exit node unavailable" to "Выходной узел недоступен",
+        "Fastest secure sign-in method" to "Самый быстрый безопасный способ входа",
+        "Finish sign-in on the paired phone" to "Завершите вход на сопряжённом телефоне",
+        "For advanced or unattended setup" to "Для расширенной или автономной настройки",
+        "Generate new code" to "Создать новый код",
+        "Headscale / custom server" to "Headscale / пользовательский сервер",
+        "Independent open-source client based on Tailscale for Android. Not affiliated with or endorsed by Tailscale Inc." to
+            "Независимый клиент с открытым исходным кодом на основе Tailscale для Android. Не связан с Tailscale Inc. и не одобрен ею.",
+        "Internet not verified" to "Доступ в интернет не подтверждён",
+        "Internet was lost before sign-out could be verified. The local account was kept." to
+            "Интернет пропал до проверки выхода. Локальный аккаунт сохранён.",
+        "Keep access to the watch’s local network" to "Сохранить доступ к локальной сети часов",
+        "Language" to "Язык",
+        "Language, DNS, account and Tile" to "Язык, DNS, аккаунт и плитка",
+        "Last used" to "Использовался последним",
+        "Login code" to "Код входа",
+        "Measure tailnet latency" to "Измерить задержку в tailnet",
+        "My devices" to "Мои устройства",
+        "No devices available yet." to "Устройств пока нет.",
+        "No exit node" to "Без выходного узла",
+        "No internet connection" to "Нет подключения к интернету",
+        "No problems detected" to "Проблем не обнаружено",
+        "None" to "Нет",
+        "Offline" to "Не в сети",
+        "On your computer, after installing Tailware:" to "На компьютере после установки Tailware:",
+        "One-time ADB authorization" to "Однократная авторизация ADB",
+        "Online" to "В сети",
+        "Open on your phone, with QR as fallback" to
+            "Открыть на телефоне; QR-код — запасной вариант",
+        "Opening on phone…" to "Открытие на телефоне…",
+        "Optional; Android still shows the active VPN notification" to
+            "Необязательно; Android всё равно показывает активное VPN-уведомление",
+        "Phone unavailable" to "Телефон недоступен",
+        "Ping device" to "Проверить устройство",
+        "Ping failed" to "Проверка не удалась",
+        "Ready" to "Готово",
+        "Remote sign-out could not be verified. The local account was kept." to
+            "Удалённый выход не удалось проверить. Локальный аккаунт сохранён.",
+        "Retry authorization" to "Проверить авторизацию снова",
+        "Scan with your phone, then approve Tailware." to
+            "Отсканируйте телефоном и подтвердите Tailware.",
+        "Select an exit node before enabling LAN access." to
+            "Выберите выходной узел перед включением доступа к LAN.",
+        "Sent to phone" to "Отправлено на телефон",
+        "Settings" to "Настройки",
+        "Sign in" to "Войти",
+        "Sign in before changing Tailscale DNS." to "Войдите перед изменением Tailscale DNS.",
+        "Sign in without VPN yet" to "Войти пока без VPN",
+        "Sign in with Tailscale" to "Войти через Tailscale",
+        "Sign out" to "Выйти",
+        "Signed out locally while offline. Tailscale was not notified; the old device entry may remain in the admin console." to
+            "Локальный выход выполнен без сети. Tailscale не получил уведомление; старая запись устройства может остаться в консоли администратора.",
+        "Sign-in succeeded, but Android did not allow Tailware to start the VPN service." to
+            "Вход выполнен, но Android не разрешил Tailware запустить службу VPN.",
+        "Sign-in succeeded, but the one-time VPN authorization is still required before Tailware can connect." to
+            "Вход выполнен, но перед подключением Tailware всё ещё требуется однократная авторизация VPN.",
+        "Signs out locally; the old admin entry may remain" to
+            "Локальный выход; старая запись в админке может остаться",
+        "Source" to "Исходный код",
+        "Starting…" to "Запуск…",
+        "Status" to "Статус",
+        "Status and quick action" to "Статус и быстрое действие",
+        "Tailscale could not start sign-in. Check the watch connection." to
+            "Tailscale не удалось начать вход. Проверьте подключение часов.",
+        "Tailscale authentication key" to "Ключ аутентификации Tailscale",
+        "Tailscale login QR code" to "QR-код входа Tailscale",
+        "Tailscale or Headscale" to "Tailscale или Headscale",
+        "Tailscale preferences are not available yet." to "Параметры Tailscale пока недоступны.",
+        "Tailscale settings are still loading. Wait a moment and try again." to
+            "Настройки Tailscale ещё загружаются. Подождите и повторите попытку.",
+        "Tailscale sign-in is taking too long. Check the watch connection." to
+            "Вход в Tailscale занимает слишком много времени. Проверьте подключение часов.",
+        "Tailware connection" to "Подключение Tailware",
+        "Tailware could not restore the VPN automatically. Tap the connection control to retry." to
+            "Tailware не удалось автоматически восстановить VPN. Нажмите кнопку подключения, чтобы повторить.",
+        "Tailware could not verify that the local account was removed." to
+            "Tailware не удалось подтвердить удаление локального аккаунта.",
+        "Tailware Tile" to "Плитка Tailware",
+        "Tap after the ADB command succeeds" to "Нажмите после успешного выполнения команды ADB",
+        "Tap for details" to "Нажмите для подробностей",
+        "Tap once more to sign out on this watch" to "Нажмите ещё раз, чтобы выйти на этих часах",
+        "Tap opens Tailware" to "Нажатие открывает Tailware",
+        "Tap to dismiss" to "Нажмите, чтобы закрыть",
+        "Tap toggles connection" to "Нажатие переключает подключение",
+        "The custom server is not responding. Check its address and connection." to
+            "Пользовательский сервер не отвечает. Проверьте его адрес и подключение.",
+        "The custom server refused sign-in. Check its address and account settings." to
+            "Пользовательский сервер отклонил вход. Проверьте адрес и настройки аккаунта.",
+        "The key cannot be checked while the watch is offline." to
+            "Ключ нельзя проверить, пока часы не в сети.",
+        "The key remains visible while it is checked" to "Ключ остаётся видимым во время проверки",
+        "The key was not accepted. Check it and try again." to
+            "Ключ не принят. Проверьте его и повторите попытку.",
+        "The previous link will no longer be shown" to "Предыдущая ссылка больше не будет показана",
+        "The selected device is no longer available." to "Выбранное устройство больше недоступно.",
+        "The selected exit node is no longer available." to
+            "Выбранный выходной узел больше недоступен.",
+        "The selected exit node is offline." to "Выбранный выходной узел не в сети.",
+        "The Tailware tunnel is still present, but this watch has no internet connection." to
+            "Туннель Tailware всё ещё активен, но у этих часов нет подключения к интернету.",
+        "This watch" to "Эти часы",
+        "This device has no IPv4 address to ping." to
+            "У этого устройства нет IPv4-адреса для ping.",
+        "This device left the tailnet." to "Это устройство покинуло tailnet.",
+        "This is taking too long. Check the connection and try again." to
+            "Это занимает слишком много времени. Проверьте подключение и повторите попытку.",
+        "This is this watch; a self-ping does not test a network path." to
+            "Это те же часы; ping самого устройства не проверяет сетевой маршрут.",
+        "Try again or use the QR code below" to "Повторите попытку или используйте QR-код ниже",
+        "Try again" to "Повторить",
+        "Unavailable" to "Недоступно",
+        "Use the local internet connection" to "Использовать локальное интернет-подключение",
+        "Version" to "Версия",
+        "Version, source and licenses" to "Версия, исходный код и лицензии",
+        "VPN authorization is required before Tailware can connect." to
+            "Перед подключением Tailware требуется авторизация VPN.",
+        "VPN setup" to "Настройка VPN",
+        "VPN setup needed" to "Нужна настройка VPN",
+        "Wear OS does not provide a supported VPN confirmation screen. Authorize Tailware once through ADB." to
+            "Wear OS не предоставляет поддерживаемый экран подтверждения VPN. Один раз авторизуйте Tailware через ADB.",
+        "Your private network, on your wrist." to "Ваша частная сеть — на запястье.",
+        "this watch" to "эти часы",
+    )

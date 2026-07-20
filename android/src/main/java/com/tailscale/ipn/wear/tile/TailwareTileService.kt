@@ -3,7 +3,9 @@
 
 package com.tailscale.ipn.wear.tile
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.net.VpnService
 import android.util.Log
 import androidx.core.content.edit
@@ -24,9 +26,10 @@ import androidx.wear.tiles.material.Text
 import androidx.wear.tiles.material.Typography
 import androidx.wear.tiles.material.layouts.PrimaryLayout
 import com.google.common.util.concurrent.ListenableFuture
-import com.tailscale.ipn.App
+import com.tailscale.ipn.UninitializedApp
 import com.tailscale.ipn.ui.model.Ipn
 import com.tailscale.ipn.wear.TailwareVpnStateStore
+import com.tailscale.ipn.wear.WearMainActivity
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 
@@ -36,9 +39,15 @@ class TailwareTileService : TileService() {
       requestParams: RequestBuilders.TileRequest
   ): ListenableFuture<TileBuilders.Tile> {
     if (requestParams.currentState.lastClickableId == CLICK_ID) {
-      handleConnectionTap()
+      handleConnectionTap(
+          TailwareTileStateStore.readDisplayedAction(this, requestParams.tileId.toString()))
     }
     val snapshot = readSnapshot()
+    TailwareTileStateStore.writeDisplayedAction(
+        this,
+        requestParams.tileId.toString(),
+        snapshot.displayedAction,
+    )
     val root = tileLayout(requestParams, snapshot)
     val timeline =
         TimelineBuilders.Timeline.Builder()
@@ -61,20 +70,46 @@ class TailwareTileService : TileService() {
   ): ListenableFuture<ResourceBuilders.Resources> =
       ImmediateFuture(ResourceBuilders.Resources.Builder().setVersion(RESOURCES_VERSION).build())
 
-  private fun handleConnectionTap() {
-    val app = App.get()
-    val vpnAuthorized = runCatching { VpnService.prepare(this) == null }.getOrDefault(false)
-    when (tileToggleDecision(
-        desiredVpnEnabled = TailwareVpnStateStore.desiredVpnEnabled(this),
-        vpnAuthorized = vpnAuthorized,
-        ableToStartVpn = app.isAbleToStartVPN(),
-    )) {
+  private fun handleConnectionTap(displayedAction: TileToggleDecision) {
+    when (displayedAction) {
       TileToggleDecision.Start -> {
-        if (!app.startVPN()) TailwareVpnStateStore.setDesiredVpnEnabled(this, false)
+        val started =
+            runCatching {
+                  val app = UninitializedApp.get()
+                  VpnService.prepare(this) == null && app.isAbleToStartVPN() && app.startVPN()
+                }
+                .onFailure { Log.w("TailwareTile", "Unable to start Tailware from the Tile", it) }
+                .getOrDefault(false)
+        if (!started) {
+          TailwareVpnStateStore.setDesiredVpnEnabled(this, false)
+          openTailware()
+        }
       }
-      TileToggleDecision.Stop -> app.stopVPN()
-      TileToggleDecision.OpenApp -> Unit
+      TileToggleDecision.Stop -> {
+        val stopped =
+            runCatching { UninitializedApp.get().stopVPN() }
+                .onFailure { Log.w("TailwareTile", "Unable to stop Tailware from the Tile", it) }
+                .getOrDefault(false)
+        if (!stopped) openTailware()
+      }
+      TileToggleDecision.OpenApp -> openTailware()
     }
+  }
+
+  private fun openTailware() {
+    runCatching {
+          PendingIntent.getActivity(
+                  this,
+                  OPEN_APP_REQUEST_CODE,
+                  Intent(this, WearMainActivity::class.java),
+                  PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+              )
+              .send()
+        }
+        .onFailure { error ->
+          Log.w("TailwareTile", "Unable to open Tailware from the Tile", error)
+          TailwareTileUpdates.request(this)
+        }
   }
 
   private fun readSnapshot(): TileSnapshot {
@@ -125,15 +160,33 @@ class TailwareTileService : TileService() {
               else -> null
             }
     val quickAction = preferences.getString(KEY_TILE_QUICK_ACTION, QUICK_ACTION_TOGGLE)
+    val visualStatus =
+        resolveTileVisualStatus(
+            tunnelStatus = tunnelStatus,
+            underlyingOnline = cached.underlyingOnline,
+            setupRequired = setupMessage != null,
+            problemMessage = cached.problemMessage,
+            problemIsError = cached.problemIsError,
+        )
+    val displayedAction =
+        displayedTileAction(
+            alwaysOpenApp = quickAction == QUICK_ACTION_OPEN_APP,
+            visualStatus = visualStatus,
+            tunnelStatus = tunnelStatus,
+        )
 
     return TileSnapshot(
         tunnelStatus = tunnelStatus,
+        visualStatus = visualStatus,
+        displayedAction = displayedAction,
         selfIp = cached.selfIp,
         activeExitNodeName = cached.activeExitNodeName,
         tailscaleDnsEnabled = cached.tailscaleDnsEnabled,
+        magicDnsName = cached.magicDnsName,
+        allowLanAccess = cached.allowLanAccess,
         underlyingOnline = cached.underlyingOnline,
         setupMessage = setupMessage,
-        openApp = quickAction == QUICK_ACTION_OPEN_APP,
+        problemMessage = cached.problemMessage,
         showIp = preferences.getBoolean(KEY_TILE_SHOW_IP, true),
         showExitNode = preferences.getBoolean(KEY_TILE_SHOW_EXIT_NODE, true),
         showMagicDns = preferences.getBoolean(KEY_TILE_SHOW_MAGIC_DNS, true),
@@ -147,64 +200,67 @@ class TailwareTileService : TileService() {
       snapshot: TileSnapshot,
   ): LayoutElementBuilders.LayoutElement {
     val deviceParameters = requestParams.deviceParameters ?: fallbackDeviceParameters()
-    val underlyingUnavailable = snapshot.underlyingOnline == false
     val statusColor =
-        when {
-          underlyingUnavailable -> COLOR_CONNECTING
-          snapshot.tunnelStatus == TileTunnelStatus.Connected -> COLOR_CONNECTED
-          snapshot.tunnelStatus == TileTunnelStatus.Connecting -> COLOR_CONNECTING
-          else -> COLOR_DISCONNECTED
+        when (snapshot.visualStatus) {
+          TileVisualStatus.Connected -> COLOR_CONNECTED
+          TileVisualStatus.Connecting -> COLOR_CONNECTING
+          TileVisualStatus.Off -> COLOR_DISCONNECTED
+          TileVisualStatus.Warning -> COLOR_WARNING
+          TileVisualStatus.Error -> COLOR_ERROR
         }
     val statusLabel =
-        when (snapshot.tunnelStatus) {
-          TileTunnelStatus.Connected ->
+        when (snapshot.visualStatus) {
+          TileVisualStatus.Connected ->
               localized(snapshot.language, "Connected", "Verbonden", "Connecté", "Verbunden")
-          TileTunnelStatus.Connecting ->
+          TileVisualStatus.Connecting ->
               localized(snapshot.language, "Connecting", "Verbinden", "Connexion", "Verbindung")
-          TileTunnelStatus.Disconnected ->
-              localized(
-                  snapshot.language,
-                  "Disconnected",
-                  "Niet verbonden",
-                  "Déconnecté",
-                  "Getrennt",
-              )
-        }
-    val displayedStatusLabel =
-        if (underlyingUnavailable) {
-          localized(
-              snapshot.language,
-              "No internet",
-              "Geen internet",
-              "Pas d’internet",
-              "Kein Internet",
-          )
-        } else {
-          statusLabel
+          TileVisualStatus.Off -> localized(snapshot.language, "Off", "Uit", "Désactivé", "Aus")
+          TileVisualStatus.Warning ->
+              localized(snapshot.language, "Attention", "Let op", "Attention", "Achtung")
+          TileVisualStatus.Error ->
+              localized(snapshot.language, "Error", "Fout", "Erreur", "Fehler")
         }
     val buttonLabel =
-        when {
-          snapshot.setupMessage != null ->
-              localized(snapshot.language, "OPEN", "OPEN", "OUVRIR", "ÖFFNEN")
-          snapshot.tunnelStatus == TileTunnelStatus.Connected -> "ON"
-          snapshot.tunnelStatus == TileTunnelStatus.Connecting -> "..."
-          else -> "OFF"
+        when (snapshot.visualStatus) {
+          TileVisualStatus.Connected -> localized(snapshot.language, "ON", "AAN", "ACTIF", "AN")
+          TileVisualStatus.Connecting -> "…"
+          TileVisualStatus.Off -> localized(snapshot.language, "OFF", "UIT", "INACTIF", "AUS")
+          TileVisualStatus.Warning,
+          TileVisualStatus.Error -> "!"
         }
     val networkDetailText =
         buildTileNetworkDetail(
             selfIp = snapshot.selfIp,
             tailscaleDnsEnabled = snapshot.tailscaleDnsEnabled,
+            magicDnsName = snapshot.magicDnsName,
             showIp = snapshot.showIp,
             showMagicDns = snapshot.showMagicDns,
+            dnsLabel = "DNS",
+            onLabel = localized(snapshot.language, "ON", "AAN", "ACTIF", "AN"),
+            offLabel = localized(snapshot.language, "OFF", "UIT", "INACTIF", "AUS"),
         )
     val supportingText =
-        snapshot.setupMessage
+        snapshot.problemMessage?.let(::shortTileProblem)
+            ?: snapshot.setupMessage
+            ?: if (snapshot.underlyingOnline == false) {
+              localized(
+                  snapshot.language,
+                  "No internet",
+                  "Geen internet",
+                  "Pas d’internet",
+                  "Kein Internet",
+              )
+            } else {
+              null
+            }
             ?: networkDetailText
             ?: localized(snapshot.language, "Ready", "Gereed", "Prêt", "Bereit")
     val exitNodeText =
         buildTileExitDetail(
             activeExitNodeName = snapshot.activeExitNodeName,
+            allowLanAccess = snapshot.allowLanAccess,
             showExitNode = snapshot.showExitNode,
+            exitLabel = localized(snapshot.language, "Exit", "Exit", "Sortie", "Exit-Node"),
             offLabel =
                 localized(
                     snapshot.language,
@@ -213,8 +269,11 @@ class TailwareTileService : TileService() {
                     "Désactivé",
                     "Aus",
                 ),
+            lanLabel = "LAN",
+            onLabel = localized(snapshot.language, "On", "Aan", "Activé", "An"),
+            offStateLabel = localized(snapshot.language, "Off", "Uit", "Désactivé", "Aus"),
         )
-    val opensApp = snapshot.openApp || snapshot.setupMessage != null
+    val opensApp = snapshot.displayedAction == TileToggleDecision.OpenApp
     val action =
         if (opensApp) {
           ActionBuilders.LaunchAction.Builder()
@@ -231,8 +290,8 @@ class TailwareTileService : TileService() {
 
     val statusButton =
         Button.Builder(this, click)
-            .setSize(48f)
-            .setButtonColors(ButtonColors(statusColor, COLOR_INK))
+            .setSize(44f)
+            .setButtonColors(ButtonColors(COLOR_INK, statusColor))
             .setTextContent(buttonLabel, Typography.TYPOGRAPHY_TITLE3)
             .setContentDescription(
                 if (opensApp)
@@ -252,23 +311,53 @@ class TailwareTileService : TileService() {
                         "Tailware-Verbindung umschalten",
                     ))
             .build()
+    val statusRing =
+        LayoutElementBuilders.Box.Builder()
+            .setWidth(DimensionBuilders.dp(52f))
+            .setHeight(DimensionBuilders.dp(52f))
+            .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
+            .setVerticalAlignment(LayoutElementBuilders.VERTICAL_ALIGN_CENTER)
+            .setModifiers(
+                ModifiersBuilders.Modifiers.Builder()
+                    .setBackground(
+                        ModifiersBuilders.Background.Builder()
+                            .setColor(ColorBuilders.argb(COLOR_INK))
+                            .setCorner(
+                                ModifiersBuilders.Corner.Builder()
+                                    .setRadius(DimensionBuilders.dp(26f))
+                                    .build())
+                            .build())
+                    .setBorder(
+                        ModifiersBuilders.Border.Builder()
+                            .setColor(ColorBuilders.argb(statusColor))
+                            .setWidth(DimensionBuilders.dp(3f))
+                            .build())
+                    .build())
+            .addContent(statusButton)
+            .build()
 
     val content =
         LayoutElementBuilders.Column.Builder()
             .setWidth(DimensionBuilders.expand())
             .setHorizontalAlignment(LayoutElementBuilders.HORIZONTAL_ALIGN_CENTER)
-            .addContent(statusButton)
+            .addContent(statusRing)
             .addContent(
                 LayoutElementBuilders.Spacer.Builder().setHeight(DimensionBuilders.dp(4f)).build())
             .addContent(
-                Text.Builder(this, displayedStatusLabel)
+                Text.Builder(this, statusLabel)
                     .setTypography(Typography.TYPOGRAPHY_TITLE3)
                     .setColor(ColorBuilders.argb(statusColor))
                     .build())
             .addContent(
                 Text.Builder(this, supportingText)
                     .setTypography(Typography.TYPOGRAPHY_CAPTION2)
-                    .setColor(ColorBuilders.argb(COLOR_MUTED))
+                    .setColor(
+                        ColorBuilders.argb(
+                            when (snapshot.visualStatus) {
+                              TileVisualStatus.Warning -> COLOR_WARNING
+                              TileVisualStatus.Error -> COLOR_ERROR
+                              else -> COLOR_MUTED
+                            }))
                     .setMaxLines(1)
                     .build())
             .apply {
@@ -295,12 +384,16 @@ class TailwareTileService : TileService() {
 
   private data class TileSnapshot(
       val tunnelStatus: TileTunnelStatus,
+      val visualStatus: TileVisualStatus,
+      val displayedAction: TileToggleDecision,
       val selfIp: String?,
       val activeExitNodeName: String?,
       val tailscaleDnsEnabled: Boolean,
+      val magicDnsName: String?,
+      val allowLanAccess: Boolean,
       val underlyingOnline: Boolean?,
       val setupMessage: String?,
-      val openApp: Boolean,
+      val problemMessage: String?,
       val showIp: Boolean,
       val showExitNode: Boolean,
       val showMagicDns: Boolean,
@@ -332,11 +425,13 @@ class TailwareTileService : TileService() {
         LANGUAGE_DUTCH -> dutch
         LANGUAGE_FRENCH -> french
         LANGUAGE_GERMAN -> german
+        LANGUAGE_RUSSIAN -> russianTileTranslation(english)
         else -> english
       }
 
   companion object {
     private const val RESOURCES_VERSION = "3"
+    private const val OPEN_APP_REQUEST_CODE = 91
     // State changes request immediate updates; this is only a battery-friendly reconciliation.
     private const val FRESHNESS_INTERVAL_MILLIS = 15 * 60_000L
     private const val CLICK_ID = "tailware_connection"
@@ -348,6 +443,8 @@ class TailwareTileService : TileService() {
     private const val COLOR_CONNECTED = 0xFF63F2C2.toInt()
     private const val COLOR_CONNECTING = 0xFFFFBC66.toInt()
     private const val COLOR_DISCONNECTED = 0xFF70868D.toInt()
+    private const val COLOR_WARNING = 0xFFFFBC66.toInt()
+    private const val COLOR_ERROR = 0xFFFF6B72.toInt()
   }
 }
 
@@ -360,6 +457,10 @@ internal data class CachedTileState(
     val activeExitNodeName: String? = null,
     val underlyingOnline: Boolean? = null,
     val tailscaleDnsEnabled: Boolean = false,
+    val magicDnsName: String? = null,
+    val allowLanAccess: Boolean = false,
+    val problemMessage: String? = null,
+    val problemIsError: Boolean = false,
 )
 
 /**
@@ -370,17 +471,7 @@ internal data class CachedTileState(
  */
 internal object TailwareTileStateStore {
   fun beginProcessSession(context: Context) {
-    val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
-    val cachedState = preferences.getString(KEY_CACHED_IPN_STATE, null)
-    val runningState =
-        cachedState == Ipn.State.Running.name ||
-            cachedState == Ipn.State.Starting.name ||
-            cachedState == Ipn.State.Stopping.name
-    if (!preferences.getBoolean(KEY_CACHED_VPN_ACTIVE, false) && !runningState) return
-    preferences.edit {
-      putBoolean(KEY_CACHED_VPN_ACTIVE, false)
-      if (runningState) putString(KEY_CACHED_IPN_STATE, Ipn.State.Stopped.name)
-    }
+    clearIdentityAndStatus(context)
   }
 
   fun read(context: Context): CachedTileState {
@@ -402,7 +493,69 @@ internal object TailwareTileStateStore {
         activeExitNodeName = preferences.getString(KEY_CACHED_ACTIVE_EXIT_NODE, null),
         underlyingOnline = underlyingOnline,
         tailscaleDnsEnabled = preferences.getBoolean(KEY_CACHED_TAILSCALE_DNS_ENABLED, false),
+        magicDnsName = preferences.getString(KEY_CACHED_MAGIC_DNS_NAME, null),
+        allowLanAccess = preferences.getBoolean(KEY_CACHED_ALLOW_LAN_ACCESS, false),
+        problemMessage = preferences.getString(KEY_CACHED_PROBLEM_MESSAGE, null),
+        problemIsError = preferences.getBoolean(KEY_CACHED_PROBLEM_IS_ERROR, false),
     )
+  }
+
+  fun clearIdentityAndStatus(context: Context): Boolean {
+    val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
+    val keysToRemove = preferences.all.keys.filter(::shouldClearTileCacheKey)
+    if (keysToRemove.isEmpty()) return false
+    preferences.edit { keysToRemove.forEach { remove(it) } }
+    return true
+  }
+
+  fun writeSupplemental(
+      context: Context,
+      magicDnsName: String?,
+      allowLanAccess: Boolean,
+      problemMessage: String?,
+      problemIsError: Boolean,
+  ): Boolean {
+    val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
+    val normalizedDns = magicDnsName?.trim()?.trimEnd('.')?.takeIf { it.isNotBlank() }
+    val normalizedProblem =
+        problemMessage
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.take(MAX_TILE_PROBLEM_CACHE_LENGTH)
+            ?.takeIf { it.isNotBlank() }
+    val changed =
+        preferences.getString(KEY_CACHED_MAGIC_DNS_NAME, null) != normalizedDns ||
+            preferences.getBoolean(KEY_CACHED_ALLOW_LAN_ACCESS, false) != allowLanAccess ||
+            preferences.getString(KEY_CACHED_PROBLEM_MESSAGE, null) != normalizedProblem ||
+            preferences.getBoolean(KEY_CACHED_PROBLEM_IS_ERROR, false) !=
+                (normalizedProblem != null && problemIsError)
+    if (!changed) return false
+    preferences.edit {
+      if (normalizedDns == null) remove(KEY_CACHED_MAGIC_DNS_NAME)
+      else putString(KEY_CACHED_MAGIC_DNS_NAME, normalizedDns)
+      putBoolean(KEY_CACHED_ALLOW_LAN_ACCESS, allowLanAccess)
+      if (normalizedProblem == null) remove(KEY_CACHED_PROBLEM_MESSAGE)
+      else putString(KEY_CACHED_PROBLEM_MESSAGE, normalizedProblem)
+      putBoolean(KEY_CACHED_PROBLEM_IS_ERROR, normalizedProblem != null && problemIsError)
+    }
+    return true
+  }
+
+  fun readDisplayedAction(context: Context, tileId: String): TileToggleDecision {
+    val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
+    val stored = preferences.getString(KEY_DISPLAYED_ACTION_PREFIX + tileId, null)
+    return displayedActionFromStored(stored)
+  }
+
+  fun writeDisplayedAction(
+      context: Context,
+      tileId: String,
+      action: TileToggleDecision,
+  ) {
+    val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
+    val key = KEY_DISPLAYED_ACTION_PREFIX + tileId
+    if (preferences.getString(key, null) == action.name) return
+    preferences.edit { putString(key, action.name) }
   }
 
   fun write(
@@ -417,8 +570,9 @@ internal object TailwareTileStateStore {
       tailscaleDnsEnabled: Boolean = false,
   ): Boolean {
     val preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE)
-    val normalizedIp = selfIp?.takeIf { it.isNotBlank() }
-    val normalizedExitNodeName = activeExitNodeName?.takeIf { it.isNotBlank() }
+    val signedOutState = ipnState == Ipn.State.NeedsLogin
+    val normalizedIp = selfIp?.takeIf { it.isNotBlank() && !signedOutState }
+    val normalizedExitNodeName = activeExitNodeName?.takeIf { it.isNotBlank() && !signedOutState }
     val storedUnderlyingOnline =
         if (preferences.contains(KEY_CACHED_UNDERLYING_ONLINE)) {
           preferences.getBoolean(KEY_CACHED_UNDERLYING_ONLINE, false)
@@ -433,7 +587,9 @@ internal object TailwareTileStateStore {
             preferences.getString(KEY_CACHED_SELF_IP, null) != normalizedIp ||
             preferences.getString(KEY_CACHED_ACTIVE_EXIT_NODE, null) != normalizedExitNodeName ||
             storedUnderlyingOnline != underlyingOnline ||
-            preferences.getBoolean(KEY_CACHED_TAILSCALE_DNS_ENABLED, false) != tailscaleDnsEnabled
+            preferences.getBoolean(KEY_CACHED_TAILSCALE_DNS_ENABLED, false) !=
+                tailscaleDnsEnabled ||
+            (signedOutState && preferences.all.keys.any { it in SUPPLEMENTAL_STATE_KEYS })
     if (!changed) return false
 
     preferences.edit {
@@ -448,6 +604,9 @@ internal object TailwareTileStateStore {
       if (underlyingOnline == null) remove(KEY_CACHED_UNDERLYING_ONLINE)
       else putBoolean(KEY_CACHED_UNDERLYING_ONLINE, underlyingOnline)
       putBoolean(KEY_CACHED_TAILSCALE_DNS_ENABLED, tailscaleDnsEnabled)
+      if (signedOutState) {
+        SUPPLEMENTAL_STATE_KEYS.forEach { remove(it) }
+      }
     }
     return true
   }
@@ -498,18 +657,111 @@ private const val KEY_CACHED_SELF_IP = "tile_cached_self_ip"
 private const val KEY_CACHED_ACTIVE_EXIT_NODE = "tile_cached_active_exit_node"
 private const val KEY_CACHED_UNDERLYING_ONLINE = "tile_cached_underlying_online"
 private const val KEY_CACHED_TAILSCALE_DNS_ENABLED = "tile_cached_tailscale_dns_enabled"
+private const val KEY_CACHED_MAGIC_DNS_NAME = "tile_cached_magic_dns_name"
+private const val KEY_CACHED_ALLOW_LAN_ACCESS = "tile_cached_allow_lan_access"
+private const val KEY_CACHED_PROBLEM_MESSAGE = "tile_cached_problem_message"
+private const val KEY_CACHED_PROBLEM_IS_ERROR = "tile_cached_problem_is_error"
+private const val KEY_DISPLAYED_ACTION_PREFIX = "tile_displayed_action_"
 private const val LANGUAGE_ENGLISH = "English"
 private const val LANGUAGE_DUTCH = "Dutch"
 private const val LANGUAGE_FRENCH = "French"
 private const val LANGUAGE_GERMAN = "German"
+private const val LANGUAGE_RUSSIAN = "Russian"
 private const val QUICK_ACTION_TOGGLE = "ToggleConnection"
 private const val QUICK_ACTION_OPEN_APP = "OpenApp"
+private const val MAX_TILE_PROBLEM_CACHE_LENGTH = 120
+private const val MAX_TILE_PROBLEM_LENGTH = 36
+
+private val SUPPLEMENTAL_STATE_KEYS =
+    setOf(
+        KEY_CACHED_MAGIC_DNS_NAME,
+        KEY_CACHED_ALLOW_LAN_ACCESS,
+        KEY_CACHED_PROBLEM_MESSAGE,
+        KEY_CACHED_PROBLEM_IS_ERROR,
+    )
+
+private val CACHED_STATE_KEYS =
+    setOf(
+        KEY_CACHED_IPN_STATE,
+        KEY_CACHED_VPN_ACTIVE,
+        KEY_CACHED_VPN_AUTHORIZED,
+        KEY_CACHED_ABLE_TO_START,
+        KEY_CACHED_SELF_IP,
+        KEY_CACHED_ACTIVE_EXIT_NODE,
+        KEY_CACHED_UNDERLYING_ONLINE,
+        KEY_CACHED_TAILSCALE_DNS_ENABLED,
+    ) + SUPPLEMENTAL_STATE_KEYS
+
+internal fun shouldClearTileCacheKey(key: String): Boolean = key in CACHED_STATE_KEYS
+
+internal fun displayedActionFromStored(stored: String?): TileToggleDecision =
+    TileToggleDecision.values().firstOrNull { it.name == stored } ?: TileToggleDecision.OpenApp
+
+private fun russianTileTranslation(english: String): String =
+    when (english) {
+      "Sign in to set up" -> "Войдите для настройки"
+      "Approve this device" -> "Подтвердите устройство"
+      "Finish account setup" -> "Завершите настройку"
+      "VPN setup required" -> "Нужна настройка VPN"
+      "Connected" -> "Подключено"
+      "Connecting" -> "Подключение"
+      "ON" -> "ВКЛ"
+      "OFF" -> "ВЫКЛ"
+      "Off" -> "Выкл."
+      "On" -> "Вкл."
+      "Exit" -> "Выход"
+      "Attention" -> "Внимание"
+      "Error" -> "Ошибка"
+      "No internet" -> "Нет интернета"
+      "Ready" -> "Готово"
+      "Open Tailware" -> "Открыть Tailware"
+      "Toggle Tailware connection" -> "Переключить Tailware"
+      else -> english
+    }
 
 internal enum class TileTunnelStatus {
   Connected,
   Connecting,
   Disconnected,
 }
+
+internal enum class TileVisualStatus {
+  Connected,
+  Connecting,
+  Off,
+  Warning,
+  Error,
+}
+
+internal fun resolveTileVisualStatus(
+    tunnelStatus: TileTunnelStatus,
+    underlyingOnline: Boolean?,
+    setupRequired: Boolean,
+    problemMessage: String?,
+    problemIsError: Boolean,
+): TileVisualStatus =
+    when {
+      !problemMessage.isNullOrBlank() && problemIsError -> TileVisualStatus.Error
+      !problemMessage.isNullOrBlank() || underlyingOnline == false || setupRequired ->
+          TileVisualStatus.Warning
+      tunnelStatus == TileTunnelStatus.Connected -> TileVisualStatus.Connected
+      tunnelStatus == TileTunnelStatus.Connecting -> TileVisualStatus.Connecting
+      else -> TileVisualStatus.Off
+    }
+
+internal fun displayedTileAction(
+    alwaysOpenApp: Boolean,
+    visualStatus: TileVisualStatus,
+    tunnelStatus: TileTunnelStatus,
+): TileToggleDecision =
+    when {
+      alwaysOpenApp ||
+          visualStatus == TileVisualStatus.Warning ||
+          visualStatus == TileVisualStatus.Error -> TileToggleDecision.OpenApp
+      tunnelStatus == TileTunnelStatus.Connected || tunnelStatus == TileTunnelStatus.Connecting ->
+          TileToggleDecision.Stop
+      else -> TileToggleDecision.Start
+    }
 
 /**
  * The persisted desired state deliberately wins during transitions, so a Tile refresh immediately
@@ -532,23 +784,60 @@ internal fun resolveTileTunnelStatus(
 internal fun buildTileNetworkDetail(
     selfIp: String?,
     tailscaleDnsEnabled: Boolean,
+    magicDnsName: String?,
     showIp: Boolean,
     showMagicDns: Boolean,
+    dnsLabel: String = "DNS",
+    onLabel: String = "ON",
+    offLabel: String = "OFF",
 ): String? =
     buildList {
           if (showIp) selfIp?.takeIf { it.isNotBlank() }?.let { add("IP $it") }
-          if (showMagicDns) add(if (tailscaleDnsEnabled) "DNS ON" else "DNS OFF")
+          if (showMagicDns) {
+            add(
+                if (tailscaleDnsEnabled) {
+                  "$dnsLabel ${
+                    magicDnsName
+                        ?.takeIf { it.isNotBlank() }
+                        ?.substringBefore('.')
+                        ?.let { compactTileValue(it, 12) }
+                        ?: onLabel
+                  }"
+                } else {
+                  "$dnsLabel $offLabel"
+                })
+          }
         }
         .takeIf { it.isNotEmpty() }
         ?.joinToString(" • ")
 
 internal fun buildTileExitDetail(
     activeExitNodeName: String?,
+    allowLanAccess: Boolean,
     showExitNode: Boolean,
+    exitLabel: String = "Exit",
     offLabel: String,
+    lanLabel: String,
+    onLabel: String,
+    offStateLabel: String,
 ): String? {
   if (!showExitNode) return null
-  return "Exit: ${activeExitNodeName?.takeIf { it.isNotBlank() } ?: offLabel}"
+  val exitNode =
+      activeExitNodeName?.takeIf { it.isNotBlank() }?.let { compactTileValue(it, 14) }
+          ?: return "$exitLabel: $offLabel"
+  return "$exitLabel: $exitNode • $lanLabel ${if (allowLanAccess) onLabel else offStateLabel}"
+}
+
+internal fun compactTileValue(value: String, maxLength: Int): String {
+  val normalized = value.replace(Regex("\\s+"), " ").trim()
+  if (normalized.length <= maxLength) return normalized
+  return normalized.take(maxLength - 1).trimEnd() + "…"
+}
+
+internal fun shortTileProblem(message: String): String {
+  val normalized = message.replace(Regex("\\s+"), " ").trim()
+  if (normalized.length <= MAX_TILE_PROBLEM_LENGTH) return normalized
+  return normalized.take(MAX_TILE_PROBLEM_LENGTH - 1).trimEnd() + "…"
 }
 
 internal enum class TileToggleDecision {

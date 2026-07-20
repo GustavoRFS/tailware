@@ -39,6 +39,8 @@ adb connect <WATCH-IP>:<DEBUG-PORT>
 adb devices -l
 ```
 
+### Windows
+
 From the Tailware repository root, run:
 
 ```powershell
@@ -61,6 +63,12 @@ With multiple connected devices, select the watch explicitly:
 .\tools\authorize-wear-vpn.ps1 -Serial '<WATCH-SERIAL>'
 ```
 
+The helper can also connect to the watch first:
+
+```powershell
+.\tools\authorize-wear-vpn.ps1 -ConnectAddress '<WATCH-IP>:<DEBUG-PORT>'
+```
+
 If `adb.exe` is not on `PATH`:
 
 ```powershell
@@ -75,9 +83,38 @@ Preview the operation without changing the watch:
 .\tools\authorize-wear-vpn.ps1 -WhatIf
 ```
 
-After the script confirms authorization, reopen Tailware and tap **Connect**.
-The app's own `VpnService.prepare()` result is the definitive authorization
-check.
+Keep Tailware's setup screen open while running the helper. It checks
+authorization every two seconds and continues to sign-in automatically once
+the grant is visible. After a successful sign-in, Tailware starts the tunnel
+automatically. The app's own `VpnService.prepare()` result remains the
+definitive authorization check.
+
+### macOS or Linux
+
+Install Android SDK Platform-Tools, connect the watch with `adb pair` and
+`adb connect`, then run:
+
+```sh
+chmod +x ./tools/authorize-wear-vpn.sh
+./tools/authorize-wear-vpn.sh
+```
+
+With multiple connected Android devices, always select the watch explicitly:
+
+```sh
+./tools/authorize-wear-vpn.sh --serial '<WATCH-SERIAL>'
+```
+
+Or connect and authorize in one guarded command:
+
+```sh
+./tools/authorize-wear-vpn.sh --connect '<WATCH-IP>:<DEBUG-PORT>'
+```
+
+The script also supports `--adb /path/to/adb`, `--dry-run`, and `--yes`.
+It performs the same device, package, Android-user, and `ACTIVATE_VPN`
+verification as the Windows script. It never enables lockdown or replaces an
+always-on VPN provider.
 
 ## Manual equivalent
 

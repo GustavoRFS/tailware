@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="connect">Verbinden</string>
+    <string name="disconnect">Trennen</string>
+    <string name="connected">Verbunden</string>
+    <string name="using_exit_node">Exit-Node wird verwendet (%s)</string>
+    <string name="not_connected">Nicht verbunden</string>
+    <string name="starting">Startet…</string>
+</resources>

@@ -17,23 +17,27 @@ It is not affiliated with or endorsed by Tailscale Inc.
 
 ## First-version scope
 
-- Guided first-run sign-in with a fresh QR code, one-tap continuation on the
-  paired phone, auth key, or a custom Headscale/control-server URL
+- Guided first-run sign-in with an attempt-scoped QR code, one-tap continuation
+  on the paired phone, a clearly labeled Tailscale auth key, or a custom
+  Headscale/control-server URL
 - A watch-first dashboard with one large connect/disconnect control
 - Own device name, Tailscale IP addresses, MagicDNS name, tailnet, and tunnel
   status
 - Tailnet device list with peer details and ping/latency testing
 - Exit-node selection, exit-node clearing, and local-LAN access
 - Tailscale DNS on/off
-- English, Dutch, French, and German interface choices
-- Optional connected/disconnected notifications
+- English, Dutch, French, German, and Russian interface choices
+- Optional connection alerts, kept separate from Android's required active-VPN
+  foreground notification
 - In-app Tailware version, source attribution, and full BSD 3-Clause notice
-- Wear OS Tile for status plus either a quick connection toggle or an
-  open-app action, backed by a battery-friendly cached status
+- Wear OS Tile with a colored connection ring, compact network details, and
+  either a quick connection toggle or an open-app action, backed by a
+  battery-friendly attempt-aware status snapshot
 - Connection-health details for missing internet, DNS, DERP, and exit-node
   problems without misreporting the local VPN interface as disconnected
 - Reboot recovery that preserves the user's last explicit on/off choice
-- Safe one-time ADB authorization guidance for Wear OS VPN setup
+- Safe one-time ADB authorization guidance for Wear OS VPN setup, with guarded
+  Windows and macOS/Linux helpers
 - Optional always-on VPN setup with lockdown deliberately disabled
 - Layouts made for round screens and smaller Wear OS displays
 
@@ -54,12 +58,20 @@ the first public release.
 Android's Compatibility Test Suite treats VPN configuration as unsupported on
 watch devices and excludes watches from its `VpnService` compatibility test.
 Tailware therefore uses `VpnService.prepare()` only to check whether it is
-already authorized. When it is not, use the repository's guarded PowerShell
-helper after installing the APK and connecting the watch through wireless
-debugging:
+already authorized. When it is not, use one of the repository's guarded
+helpers after installing the APK and connecting the watch through wireless
+debugging.
+
+Windows:
 
 ```powershell
-.\tools\authorize-wear-vpn.ps1
+.\tools\authorize-wear-vpn.ps1 -ConnectAddress '<WATCH-IP>:<DEBUG-PORT>'
+```
+
+macOS or Linux:
+
+```sh
+./tools/authorize-wear-vpn.sh --connect '<WATCH-IP>:<DEBUG-PORT>'
 ```
 
 The required authorization is the `ACTIVATE_VPN` AppOp. It is **not** a runtime

@@ -76,6 +76,7 @@ object Notifier {
     if (!::app.isInitialized) {
       App.get()
     }
+    resetPublishedState()
     scope.launch(Dispatchers.IO) {
       val mask =
           NotifyWatchOpt.Prefs.value or
@@ -107,8 +108,16 @@ object Notifier {
                           "received bus update: self=${notify.SelfChange != null}, peersChanged=$peersChanged, peersRemoved=$peersRemoved, users=$users")
                     }
                   }
-                  updateNetworkMap(notify)
-                  notify.Prefs?.let(prefs::set)
+                  val signedOutBoundary =
+                      notify.Prefs?.LoggedOut == true || notify.State == Ipn.State.NeedsLogin.value
+                  if (signedOutBoundary) {
+                    clearIdentityAndStatus()
+                  } else {
+                    updateNetworkMap(notify)
+                  }
+                  if (!signedOutBoundary) {
+                    notify.Prefs?.let(prefs::set)
+                  }
                   notify.Engine?.let(engineStatus::set)
                   notify.TailFSShares?.let(tailFSShares::set)
                   notify.BrowseToURL?.let(browseToURL::set)
@@ -137,6 +146,7 @@ object Notifier {
       it.stop()
       manager = null
     }
+    resetPublishedState()
   }
 
   // NotifyWatchOpt is a bitmask of options supplied to the notifier to specify which
@@ -159,6 +169,32 @@ object Notifier {
   }
 
   @Synchronized
+  private fun clearIdentityAndStatus() {
+    userProfiles.clear()
+    _netmap.set(null)
+    prefs.set(null)
+    engineStatus.set(null)
+    tailFSShares.set(null)
+    health.set(null)
+    browseToURL.set(null)
+    loginFinished.set(null)
+  }
+
+  @Synchronized
+  private fun resetPublishedState() {
+    clearIdentityAndStatus()
+    _state.set(Ipn.State.NoState)
+    prefs.set(null)
+    browseToURL.set(null)
+    loginFinished.set(null)
+    errMessage.set(null)
+    version.set(null)
+    outgoingFiles.set(null)
+    incomingFiles.set(null)
+    filesWaiting.set(null)
+  }
+
+  @Synchronized
   private fun updateNetworkMap(notify: Notify) {
     val initial = notify.InitialStatus
     if (initial != null) {
@@ -167,7 +203,17 @@ object Notifier {
     }
 
     val cur = _netmap.value
+    val self = notify.SelfChange
     var next = initial?.toNetworkMapOrNull(userProfiles.toMap()) ?: cur
+    if (next == null && self != null) {
+      // A fresh/signed-out watcher can receive an empty InitialStatus, followed
+      // later by SelfChange and peer deltas after the first successful login.
+      // Bootstrap from that self node instead of dropping the delta forever.
+      if (initial == null) {
+        userProfiles.clear()
+      }
+      next = bootstrapNetworkMapFromSelfChange(next, self)
+    }
 
     if (initial != null && next == null) {
       _netmap.set(null)
@@ -181,7 +227,6 @@ object Notifier {
       return
     }
 
-    val self = notify.SelfChange
     if (initial == null && self != null && !next.isSameSelf(self)) {
       // A self node change is a profile boundary. It resets the implicit bus
       // state, so the publisher must resend any UserProfiles referenced by the
@@ -226,6 +271,11 @@ object Notifier {
       }
     }
   }
+
+  internal fun bootstrapNetworkMapFromSelfChange(
+      current: Netmap.NetworkMap?,
+      selfChange: Tailcfg.Node?,
+  ): Netmap.NetworkMap? = current ?: selfChange?.toEmptyNetworkMap()
 
   private fun mergePeers(
       peers: List<Tailcfg.Node>?,

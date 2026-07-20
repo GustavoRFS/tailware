@@ -42,7 +42,8 @@ enum class TailwareLanguage(val languageTag: String) {
   English("en"),
   Dutch("nl"),
   French("fr"),
-  German("de");
+  German("de"),
+  Russian("ru");
 
   companion object {
     fun fromStoredValue(value: String?): TailwareLanguage =
@@ -192,6 +193,7 @@ data class WearUiState(
     val activeExitNodeId: String? = null,
     val activeExitNodeName: String? = null,
     val allowLanAccess: Boolean = false,
+    val tailscaleSettingsReady: Boolean = false,
     val tailscaleDnsEnabled: Boolean = false,
     val underlyingNetworkStatus: com.tailscale.ipn.UnderlyingNetworkStatus =
         com.tailscale.ipn.UnderlyingNetworkStatus.Unknown,

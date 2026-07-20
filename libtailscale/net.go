@@ -32,14 +32,43 @@ var errVPNNotPrepared = errors.New("VPN service not prepared or was revoked")
 //	https://github.com/tailscale/tailscale/issues/2180
 var errMultipleUsers = errors.New("VPN cannot be created on this device due to an Android bug with multiple users")
 
-// VpnService contains the IPNService class from Android, the file descriptor, and whether the descriptor has been detached.
+// VpnService contains the Android service that owns the currently processed
+// desired-state command.
 type VpnService struct {
-	service    IPNService
-	fd         int32
-	fdDetached bool
+	service           IPNService
+	serviceID         string
+	commandGeneration int64
+	commandKind       vpnServiceCommandKind
 }
 
 var vpnService = &VpnService{}
+
+type vpnServiceSnapshot struct {
+	service           IPNService
+	serviceID         string
+	commandGeneration int64
+}
+
+func currentVPNServiceSnapshot() (vpnServiceSnapshot, bool) {
+	if vpnService.service == nil {
+		return vpnServiceSnapshot{}, false
+	}
+	return vpnServiceSnapshot{
+		service:           vpnService.service,
+		serviceID:         vpnService.serviceID,
+		commandGeneration: vpnService.commandGeneration,
+	}, true
+}
+
+func (s vpnServiceSnapshot) isDesiredCommandCurrent() bool {
+	return s.service != nil && s.service.CommandGeneration() == s.commandGeneration
+}
+
+func (s vpnServiceSnapshot) isProcessedCommandCurrent() bool {
+	return vpnService.service != nil &&
+		vpnService.serviceID == s.serviceID &&
+		vpnService.commandGeneration == s.commandGeneration
+}
 
 // Report interfaces in the device in net.Interface format.
 func (a *App) getInterfaces() ([]netmon.Interface, error) {
@@ -76,9 +105,18 @@ var googleDNSServers = []netip.Addr{
 	netip.MustParseAddr("2001:4860:4860::8844"),
 }
 
-func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error) {
+func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpnServiceSnapshot) (err error) {
 	b.logger.Logf("updateTUN: changed")
 	defer b.logger.Logf("updateTUN: finished")
+
+	if !service.isDesiredCommandCurrent() {
+		b.logger.Logf(
+			"updateTUN: skipping superseded service=%q generation=%d",
+			service.serviceID,
+			service.commandGeneration,
+		)
+		return nil
+	}
 
 	if disableTUN := len(rcfg.LocalAddrs) == 0; disableTUN {
 		b.logger.Logf("updateTUN: closing old TUNs")
@@ -101,7 +139,7 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error)
 		return nil
 	}
 
-	builder := vpnService.service.NewBuilder()
+	builder := service.service.NewBuilder()
 	b.logger.Logf("updateTUN: got new builder")
 
 	if err := builder.SetMTU(defaultMTU); err != nil {
@@ -202,58 +240,105 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig) (err error)
 		if strings.Contains(err.Error(), "INTERACT_ACROSS_USERS") {
 			// Update VPN status if VPN interface cannot be created
 			b.logger.Logf("updateTUN: could not establish VPN because %v", err)
-			vpnService.service.UpdateVpnStatus(false)
+			if service.isDesiredCommandCurrent() {
+				service.service.UpdateVpnStatus(false)
+			}
 			return errMultipleUsers
 		}
 		return fmt.Errorf("VpnService.Builder.establish: %v", err)
 	}
-	log.Printf("Setting vpn activity status to true")
-	vpnService.service.UpdateVpnStatus(true)
-	b.logger.Logf("updateTUN: established VPN")
-
 	if parcelFD == nil {
 		b.logger.Logf("updateTUN: could not establish VPN because builder.Establish returned a nil ParcelFileDescriptor")
 		return errVPNNotPrepared
 	}
+	b.logger.Logf("updateTUN: established VPN")
 
-	// detachFd.
 	tunFD, err := parcelFD.Detach()
-	vpnService.fdDetached = true
-	vpnService.fd = tunFD
-
 	if err != nil {
 		return fmt.Errorf("detachFd: %v", err)
 	}
 	b.logger.Logf("updateTUN: detached FD")
 
+	if !service.isDesiredCommandCurrent() {
+		b.logger.Logf(
+			"updateTUN: discarding superseded FD for service=%q generation=%d",
+			service.serviceID,
+			service.commandGeneration,
+		)
+		closeRawFileDescriptor(tunFD)
+		return nil
+	}
+
 	// Create TUN device.
 	tunDev, _, err := tun.CreateUnmonitoredTUNFromFD(int(tunFD))
 	if err != nil {
-		closeFileDescriptor()
+		closeRawFileDescriptor(tunFD)
 		return err
 	}
 	b.logger.Logf("updateTUN: created TUN device")
 
+	if !service.isDesiredCommandCurrent() {
+		b.logger.Logf(
+			"updateTUN: discarding superseded TUN for service=%q generation=%d",
+			service.serviceID,
+			service.commandGeneration,
+		)
+		if err := tunDev.Close(); err != nil {
+			b.logger.Logf("updateTUN: closing superseded TUN: %v", err)
+		}
+		return nil
+	}
+
 	b.devices.add(tunDev)
 	b.logger.Logf("updateTUN: added TUN device")
+
+	if !service.isDesiredCommandCurrent() {
+		b.logger.Logf(
+			"updateTUN: shutting down superseded TUN for service=%q generation=%d",
+			service.serviceID,
+			service.commandGeneration,
+		)
+		b.CloseTUNs()
+		b.devices.Down()
+		return nil
+	}
 
 	if b.devices.Up() {
 		b.logger.Logf("tunnel brought up")
 	}
 
+	if !service.isDesiredCommandCurrent() {
+		b.logger.Logf(
+			"updateTUN: stopping TUN superseded during activation for service=%q generation=%d",
+			service.serviceID,
+			service.commandGeneration,
+		)
+		b.CloseTUNs()
+		b.devices.Down()
+		return nil
+	}
+
 	b.lastCfg = rcfg
 	b.lastDNSCfg = dcfg
+	if !service.isDesiredCommandCurrent() {
+		b.logger.Logf(
+			"updateTUN: stopping TUN superseded before status publication for service=%q generation=%d",
+			service.serviceID,
+			service.commandGeneration,
+		)
+		b.CloseTUNs()
+		b.devices.Down()
+		return nil
+	}
+	log.Printf("Setting vpn activity status to true")
+	service.service.UpdateVpnStatus(true)
 	return nil
 }
 
-func closeFileDescriptor() error {
-	if vpnService.fd != -1 && vpnService.fdDetached {
-		err := syscall.Close(int(vpnService.fd))
-		vpnService.fd = -1
-		vpnService.fdDetached = false
-		return fmt.Errorf("error closing file descriptor: %w", err)
+func closeRawFileDescriptor(fd int32) {
+	if err := syscall.Close(int(fd)); err != nil {
+		log.Printf("error closing file descriptor %d: %v", fd, err)
 	}
-	return nil
 }
 
 // CloseVPN closes any active TUN devices.

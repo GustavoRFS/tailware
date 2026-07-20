@@ -68,6 +68,12 @@ data class VpnCommandDispatchResult(
     val dispatched: Boolean,
 )
 
+internal fun shouldPublishOptionalDisconnectedNotification(
+    state: Ipn.State,
+    vpnActive: Boolean,
+    desiredVpnEnabled: Boolean,
+): Boolean = state == Ipn.State.Stopped && !vpnActive && !desiredVpnEnabled
+
 class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
   val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -234,14 +240,18 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
           .distinctUntilChanged()
           .collect { snapshot ->
             val ableToStartVPN = snapshot.state > Ipn.State.NeedsMachineAuth
-            if (snapshot.state == Ipn.State.Stopped) {
+            if (shouldPublishOptionalDisconnectedNotification(
+                state = snapshot.state,
+                vpnActive = snapshot.vpnActive,
+                desiredVpnEnabled = TailwareVpnStateStore.desiredVpnEnabled(this@App),
+            )) {
               if (optionalWearNotificationsEnabled()) {
                 notifyStatus(
                     vpnRunning = false,
                     hideDisconnectAction = snapshot.hideDisconnectAction,
                 )
               } else {
-                notificationManager.cancel(STATUS_NOTIFICATION_ID)
+                notificationManager.cancel(STATUS_OPTIONAL_NOTIFICATION_ID)
               }
             }
             updateConnStatus(ableToStartVPN)
@@ -257,15 +267,6 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
                 tailscaleDnsEnabled = snapshot.tailscaleDnsEnabled,
             )) {
               TailwareTileUpdates.request(this@App)
-            }
-            // Only an established Android TUN is connected. IPNService owns the temporary
-            // foreground "Starting" notification while the interface is being established.
-            if (snapshot.vpnActive) {
-              notifyStatus(
-                  vpnRunning = true,
-                  hideDisconnectAction = snapshot.hideDisconnectAction,
-                  exitNodeName = snapshot.exitNodeName,
-              )
             }
           }
     }
@@ -293,23 +294,41 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
   fun setWantRunning(
       wantRunning: Boolean,
       reconcileDesiredState: Boolean = true,
+      commandOwner: DesiredVpnState? = null,
       onSuccess: (() -> Unit)? = null,
+      onFailure: ((Throwable) -> Unit)? = null,
   ) {
     val callback: (Result<Ipn.Prefs>) -> Unit = { result ->
       result.fold(
           onSuccess = {
-            val desired = TailwareVpnStateStore.desiredVpnEnabled(this)
-            if (reconcileDesiredState && desired != wantRunning) {
+            val desired = TailwareVpnStateStore.desiredVpnState(this)
+            if (commandOwner != null && desired != commandOwner) {
+              // The callback belongs to an older generation. Reassert the latest desired state,
+              // but never run the stale command's completion side effects.
+              setWantRunning(
+                  wantRunning = desired.enabled,
+                  reconcileDesiredState = false,
+                  commandOwner = desired,
+                  onFailure = onFailure,
+              )
+            } else if (reconcileDesiredState && desired.enabled != wantRunning) {
               // A newer user command won while this asynchronous LocalAPI PATCH was in flight.
               // Reassert the newest value so an old STOP can never undo a later START (or vice
               // versa).
-              setWantRunning(desired, reconcileDesiredState = true, onSuccess = onSuccess)
+              setWantRunning(
+                  wantRunning = desired.enabled,
+                  reconcileDesiredState = true,
+                  commandOwner = desired,
+                  onSuccess = onSuccess,
+                  onFailure = onFailure,
+              )
             } else {
               onSuccess?.invoke()
             }
           },
           onFailure = { error ->
-            TSLog.d("TAG", "Set want running: failed to update preferences: ${error.message}")
+            TSLog.e(TAG, "Failed to update WantRunning=$wantRunning: $error")
+            onFailure?.invoke(error)
           })
     }
     Client(applicationScope)
@@ -372,12 +391,12 @@ class App : UninitializedApp(), libtailscale.AppContext, ViewModelStoreOwner {
           ) && NotificationManagerCompat.from(this).areNotificationsEnabled()
 
   fun refreshOptionalWearStatusNotification() {
-    // An active tunnel owns a mandatory foreground notification through IPNService.
-    if (appViewModel.vpnActive.value) return
+    // A starting or active tunnel owns the mandatory foreground notification through IPNService.
+    if (appViewModel.vpnActive.value || TailwareVpnStateStore.desiredVpnEnabled(this)) return
     if (optionalWearNotificationsEnabled()) {
       notifyStatus(vpnRunning = false, hideDisconnectAction = false)
     } else {
-      notificationManager.cancel(STATUS_NOTIFICATION_ID)
+      notificationManager.cancel(STATUS_OPTIONAL_NOTIFICATION_ID)
     }
   }
 
@@ -598,6 +617,7 @@ open class UninitializedApp : Application() {
     const val TAG = "UninitializedApp"
     const val STATUS_NOTIFICATION_ID = 1
     const val STATUS_EXIT_NODE_FAILURE_NOTIFICATION_ID = 2
+    const val STATUS_OPTIONAL_NOTIFICATION_ID = 3
     const val STATUS_CHANNEL_ID = "tailscale-status"
     // Key for shared preference that tracks whether or not we're able to start
     // the VPN (i.e. we're logged in and machine is authorized).
@@ -675,18 +695,27 @@ open class UninitializedApp : Application() {
     // Persist the user's intent before dispatching the service command. This closes the small
     // window where an immediate reboot could otherwise restore the previous OFF state.
     val command = TailwareVpnStateStore.requestVpnEnabled(this, true)
-    return VpnCommandDispatchResult(command, dispatchVpnStart(command))
+    val dispatched = dispatchVpnStart(command)
+    if (!dispatched) {
+      // Tile and notification callers use startVPN() directly and do not have a ViewModel that can
+      // compensate for a rejected foreground-service dispatch. Claim OFF here while this exact ON
+      // generation still owns the state. Existing UI rollback calls remain safe no-ops.
+      TailwareVpnStateStore.rollbackFailedVpnStartIfCurrent(this, command)
+    }
+    return VpnCommandDispatchResult(command, dispatched)
   }
 
   /**
-   * Restores an already persisted ON state without creating a newer user command.
+   * Restores an already persisted ON state as a new technical command generation.
    *
    * The service validates [command]'s generation again when it receives the intent, so a newer OFF
    * always wins even if it arrives immediately after this check.
    */
   fun restoreVPN(command: DesiredVpnState): Boolean {
-    if (!command.enabled || TailwareVpnStateStore.desiredVpnState(this) != command) return true
-    return dispatchVpnStart(command)
+    val claimed = TailwareVpnStateStore.claimEnabledCommandIfCurrent(this, command) ?: return true
+    if (dispatchVpnStart(claimed)) return true
+    TailwareVpnStateStore.setDesiredVpnEnabledIfCurrent(this, claimed, false)
+    return false
   }
 
   private fun dispatchVpnStart(command: DesiredVpnState): Boolean {
@@ -739,21 +768,33 @@ open class UninitializedApp : Application() {
 
   fun restartVPN() {
     // A technical restart must never turn an explicitly disabled tunnel back on.
-    val command = TailwareVpnStateStore.desiredVpnState(this)
-    if (!com.tailscale.ipn.wear.shouldDispatchVpnRestart(command.enabled)) {
+    val expected = TailwareVpnStateStore.desiredVpnState(this)
+    if (!com.tailscale.ipn.wear.shouldDispatchVpnRestart(expected.enabled)) {
       return
     }
+    val command = TailwareVpnStateStore.claimEnabledCommandIfCurrent(this, expected) ?: return
     val intent =
         Intent(this, IPNService::class.java).apply {
           action = IPNService.ACTION_RESTART_VPN
           putExtra(IPNService.EXTRA_COMMAND_GENERATION, command.generation)
         }
     try {
-      startService(intent)
+      startForegroundService(intent)
     } catch (illegalStateException: IllegalStateException) {
-      TSLog.e(TAG, "restartVPN hit IllegalStateException in startService(): $illegalStateException")
+      TSLog.e(
+          TAG,
+          "restartVPN hit IllegalStateException in startForegroundService(): $illegalStateException",
+      )
+      TailwareVpnStateStore.rollbackFailedVpnStartIfCurrent(this, command)
+    } catch (securityException: SecurityException) {
+      TSLog.e(
+          TAG,
+          "restartVPN hit SecurityException in startForegroundService(): $securityException",
+      )
+      TailwareVpnStateStore.rollbackFailedVpnStartIfCurrent(this, command)
     } catch (e: Exception) {
-      TSLog.e(TAG, "restartVPN hit exception in startService(): $e")
+      TSLog.e(TAG, "restartVPN hit exception in startForegroundService(): $e")
+      TailwareVpnStateStore.rollbackFailedVpnStartIfCurrent(this, command)
     }
   }
 
@@ -771,6 +812,7 @@ open class UninitializedApp : Application() {
       vpnStarting: Boolean = false,
   ) {
     notifyStatus(
+        STATUS_OPTIONAL_NOTIFICATION_ID,
         buildStatusNotification(
             vpnRunning,
             hideDisconnectAction,
@@ -780,6 +822,12 @@ open class UninitializedApp : Application() {
   }
 
   fun notifyStatus(notification: Notification) {
+    // Non-tunnel status callers (currently exit-node failures) must never replace the mandatory
+    // foreground Connecting/Connected notification owned by IPNService.
+    notifyStatus(STATUS_EXIT_NODE_FAILURE_NOTIFICATION_ID, notification)
+  }
+
+  private fun notifyStatus(notificationId: Int, notification: Notification) {
     if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
         PackageManager.PERMISSION_GRANTED) {
       // TODO: Consider calling
@@ -791,7 +839,7 @@ open class UninitializedApp : Application() {
       // for ActivityCompat#requestPermissions for more details.
       return
     }
-    notificationManager.notify(STATUS_NOTIFICATION_ID, notification)
+    notificationManager.notify(notificationId, notification)
   }
 
   fun buildStatusNotification(

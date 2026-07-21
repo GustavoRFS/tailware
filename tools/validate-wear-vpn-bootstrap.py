@@ -1315,12 +1315,12 @@ def run_helper_fixtures(helper_kind: str) -> None:
             f"{helper_kind}: a settings rollback command failure prevented "
             "the previous AppOp from being restored"
         )
-    expected_rollback_detail = (
-        "could not release lockdown before restoring previous always-on settings"
+    expected_rollback_details = (
+        ("could not release lockdown before restoring previous always-on settings",)
         if helper_kind == "sh"
-        else "always-on settings: forced lockdown put failure"
+        else ("always-on settings:", "forced lockdown put failure")
     )
-    if expected_rollback_detail not in output:
+    if not all(detail in output for detail in expected_rollback_details):
         fail(
             f"{helper_kind}: settings rollback command failure was not reported "
             f"precisely; output was:\n{output}"

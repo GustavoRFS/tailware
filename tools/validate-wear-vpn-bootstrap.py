@@ -587,6 +587,7 @@ def exercise_helper(
                 return "'" + value.replace("'", "''") + "'"
 
             invocation = (
+                "trap { [Console]::Out.WriteLine($_.Exception.Message); exit 1 }; "
                 f"& {ps_quote(str(POWERSHELL_HELPER))} "
                 f"-AdbPath {ps_quote(str(fake_adb))} "
             )

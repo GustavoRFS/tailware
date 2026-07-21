@@ -40,7 +40,7 @@ function Assert-ConnectAddress {
 
     $separator = $Address.LastIndexOf(':')
     if ($separator -lt 1 -or $separator -eq ($Address.Length - 1)) {
-        throw "Invalid ADB connection address '$Address'. Expected WATCH-IP:DEBUG-PORT, for example 192.168.1.25:37123."
+        throw "Invalid ADB connection address '$Address'. Expected WATCH-IP:DEBUG-PORT."
     }
 
     $hostPart = $Address.Substring(0, $separator)

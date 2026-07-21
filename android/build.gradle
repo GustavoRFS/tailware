@@ -76,8 +76,9 @@ android {
     lintOptions {
         warningsAsErrors true
         baseline file("lint-baseline.xml")
-        // Repository metadata makes dependency-update hints non-deterministic across runners.
-        disable 'GradleDependency'
+        // Repository metadata and path separators make these advisory hints
+        // non-deterministic across runners.
+        disable 'GradleDependency', 'IconMissingDensityFolder'
     }
 
     kotlinOptions {

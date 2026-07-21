@@ -153,7 +153,7 @@ adb devices -l
 The watch must appear with state `device`, for example:
 
 ```text
-192.168.1.25:37123    device product:... model:...
+<WATCH-IP>:<DEBUG-PORT>    device product:... model:...
 ```
 
 Do not continue if it says `unauthorized` or `offline`. Resolve that state

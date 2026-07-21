@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
@@ -61,11 +62,37 @@ typealias PrefsHandler = (Result<Ipn.Prefs>) -> Unit
 
 typealias PingResultHandler = (Result<IpnState.PingResult>) -> Unit
 
+// A disco ping can legitimately need the backend's full probe cycle before it returns a useful
+// PingResult.Err. Keep the outer LocalAPI deadline above that cycle so it does not replace the
+// backend diagnosis with a synthetic transport timeout.
+internal const val DISCO_PING_LOCAL_API_TIMEOUT_MILLIS = 10_000L
+
+// Native startup can consume two bounded attempts before LocalAPI becomes ready. Keep the
+// WantRunning PATCH above that aggregate budget so Android reports the native causal result rather
+// than replacing it with a shorter transport timeout.
+internal const val WANT_RUNNING_LOCAL_API_TIMEOUT_MILLIS = 65_000L
+
+internal fun localApiFailureMessage(statusCode: Long, responseBody: ByteArray): String {
+  val bodyText = responseBody.toString(Charset.defaultCharset()).trim()
+  val backendDiagnostic =
+      runCatching { Json.decodeFromString<Errors.GenericError>(bodyText).error.trim() }
+          .getOrNull()
+          ?.takeIf { it.isNotBlank() }
+  return backendDiagnostic
+      ?: "Request failed with status $statusCode${bodyText.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()}"
+}
+
 /**
  * Client provides a mechanism for calling Go's LocalAPIClient. Every LocalAPI endpoint has a
  * corresponding method on this Client.
  */
-class Client(private val scope: CoroutineScope) {
+class Client(
+    private val scope: CoroutineScope,
+    private val authenticationEpoch: Long? = null,
+    private val wantRunningGeneration: Long? = null,
+    private val requestAuthorization: () -> Boolean = { true },
+    private val requestExecutionGate: ((() -> Unit) -> Unit) = { operation -> operation() },
+) {
   private val TAG = Client::class.simpleName
 
   // Access libtailscale.Application lazily
@@ -88,7 +115,11 @@ class Client(private val scope: CoroutineScope) {
     }
 
     val path = "${Endpoint.PING}?ip=${ip}&type=disco"
-    post(path, timeoutMillis = 2000L, responseHandler = responseHandler)
+    post(
+        path,
+        timeoutMillis = DISCO_PING_LOCAL_API_TIMEOUT_MILLIS,
+        responseHandler = responseHandler,
+    )
   }
 
   fun bugReportId(responseHandler: BugReportIdHandler) {
@@ -100,8 +131,21 @@ class Client(private val scope: CoroutineScope) {
   }
 
   fun editPrefs(prefs: Ipn.MaskedPrefs, responseHandler: (Result<Ipn.Prefs>) -> Unit) {
+    editPrefs(prefs, timeoutMillis = 30_000L, responseHandler = responseHandler)
+  }
+
+  fun editPrefs(
+      prefs: Ipn.MaskedPrefs,
+      timeoutMillis: Long,
+      responseHandler: (Result<Ipn.Prefs>) -> Unit,
+  ) {
     val body = Json.encodeToString(prefs).toByteArray()
-    return patch(Endpoint.PREFS, body, responseHandler = responseHandler)
+    return patch(
+        Endpoint.PREFS,
+        body,
+        timeoutMillis = timeoutMillis,
+        responseHandler = responseHandler,
+    )
   }
 
   fun setUseExitNode(use: Boolean, responseHandler: (Result<Ipn.Prefs>) -> Unit) {
@@ -198,6 +242,10 @@ class Client(private val scope: CoroutineScope) {
   ) {
     Request(
             scope = scope,
+            authenticationEpoch = authenticationEpoch,
+            wantRunningGeneration = wantRunningGeneration,
+            requestAuthorization = requestAuthorization,
+            requestExecutionGate = requestExecutionGate,
             method = "GET",
             path = path,
             body = body,
@@ -213,6 +261,10 @@ class Client(private val scope: CoroutineScope) {
   ) {
     Request(
             scope = scope,
+            authenticationEpoch = authenticationEpoch,
+            wantRunningGeneration = wantRunningGeneration,
+            requestAuthorization = requestAuthorization,
+            requestExecutionGate = requestExecutionGate,
             method = "PUT",
             path = path,
             body = body,
@@ -229,6 +281,10 @@ class Client(private val scope: CoroutineScope) {
   ) {
     Request(
             scope = scope,
+            authenticationEpoch = authenticationEpoch,
+            wantRunningGeneration = wantRunningGeneration,
+            requestAuthorization = requestAuthorization,
+            requestExecutionGate = requestExecutionGate,
             method = "POST",
             path = path,
             body = body,
@@ -245,6 +301,10 @@ class Client(private val scope: CoroutineScope) {
   ) {
     Request(
             scope = scope,
+            authenticationEpoch = authenticationEpoch,
+            wantRunningGeneration = wantRunningGeneration,
+            requestAuthorization = requestAuthorization,
+            requestExecutionGate = requestExecutionGate,
             method = "POST",
             path = path,
             parts = parts,
@@ -257,13 +317,19 @@ class Client(private val scope: CoroutineScope) {
   private inline fun <reified T> patch(
       path: String,
       body: ByteArray? = null,
+      timeoutMillis: Long = 30_000L,
       noinline responseHandler: (Result<T>) -> Unit
   ) {
     Request(
             scope = scope,
+            authenticationEpoch = authenticationEpoch,
+            wantRunningGeneration = wantRunningGeneration,
+            requestAuthorization = requestAuthorization,
+            requestExecutionGate = requestExecutionGate,
             method = "PATCH",
             path = path,
             body = body,
+            timeoutMillis = timeoutMillis,
             responseType = typeOf<T>(),
             responseHandler = responseHandler)
         .execute()
@@ -275,6 +341,10 @@ class Client(private val scope: CoroutineScope) {
   ) {
     Request(
             scope = scope,
+            authenticationEpoch = authenticationEpoch,
+            wantRunningGeneration = wantRunningGeneration,
+            requestAuthorization = requestAuthorization,
+            requestExecutionGate = requestExecutionGate,
             method = "DELETE",
             path = path,
             responseType = typeOf<T>(),
@@ -285,6 +355,10 @@ class Client(private val scope: CoroutineScope) {
 
 class Request<T>(
     private val scope: CoroutineScope,
+    private val authenticationEpoch: Long? = null,
+    private val wantRunningGeneration: Long? = null,
+    private val requestAuthorization: () -> Boolean = { true },
+    private val requestExecutionGate: ((() -> Unit) -> Unit) = { operation -> operation() },
     private val method: String,
     path: String,
     private val body: ByteArray? = null,
@@ -297,6 +371,7 @@ class Request<T>(
 
   companion object {
     private const val TAG = "LocalAPIRequest"
+    private const val NO_AUTHENTICATION_SEQUENCE = -1L
 
     private val jsonDecoder = Json { ignoreUnknownKeys = true }
 
@@ -311,19 +386,45 @@ class Request<T>(
   @OptIn(ExperimentalSerializationApi::class)
   fun execute() {
     scope.launch(Dispatchers.IO) {
-      TSLog.d(TAG, "Executing request:${method}:${fullPath} on app $app")
       try {
         val resp =
-            if (parts != null) app.callLocalAPIMultipart(timeoutMillis, method, fullPath, parts)
-            else
-                app.callLocalAPI(
-                    timeoutMillis,
-                    method,
-                    fullPath,
-                    body?.let { InputStreamAdapter(it.inputStream()) })
+            executeAuthorizedLocalApiOperation(
+                authorization = requestAuthorization,
+                executionGate = requestExecutionGate,
+            ) {
+              TSLog.d(TAG, "Executing request:${method}:${fullPath} on app $app")
+              if (parts != null) {
+                app.callLocalAPIMultipart(timeoutMillis, method, fullPath, parts)
+              } else {
+                val input = body?.let { InputStreamAdapter(it.inputStream()) }
+                if (wantRunningGeneration != null) {
+                  app.callLocalAPIForWantRunningGeneration(
+                      wantRunningGeneration,
+                      authenticationEpoch ?: NO_AUTHENTICATION_SEQUENCE,
+                      timeoutMillis,
+                      method,
+                      fullPath,
+                      input,
+                  )
+                } else if (authenticationEpoch != null) {
+                  app.callLocalAPIForAuthenticationEpoch(
+                      authenticationEpoch,
+                      timeoutMillis,
+                      method,
+                      fullPath,
+                      input,
+                  )
+                } else {
+                  app.callLocalAPI(timeoutMillis, method, fullPath, input)
+                }
+              }
+            }
         // TODO: use the streaming body for performance
         // An empty body is a perfectly valid response and indicates success
         val respData = resp.bodyBytes() ?: ByteArray(0)
+        if (resp.statusCode() >= 400) {
+          throw Exception(localApiFailureMessage(resp.statusCode(), respData))
+        }
 
         @Suppress("UNCHECKED_CAST")
         val response: Result<T> =
@@ -347,10 +448,6 @@ class Request<T>(
                     }
                   }
             }
-        if (resp.statusCode() >= 400) {
-          throw Exception(
-              "Request failed with status ${resp.statusCode()}: ${respData.toString(Charset.defaultCharset())}")
-        }
         // The response handler will invoked internally by the request parser
         scope.launch { responseHandler(response) }
       } catch (e: Exception) {

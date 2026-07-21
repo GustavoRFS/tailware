@@ -3,15 +3,13 @@
 
 package com.tailscale.ipn;
 
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 
-import androidx.work.Data;
-import androidx.work.ExistingWorkPolicy;
-import androidx.work.OneTimeWorkRequest;
-import androidx.work.OutOfQuotaPolicy;
-import androidx.work.WorkManager;
+import com.tailscale.ipn.wear.TailwareActivationCapability;
+import com.tailscale.ipn.wear.WearMainActivity;
 
 import java.util.Objects;
 
@@ -25,75 +23,64 @@ public class IPNReceiver extends BroadcastReceiver {
     public static final String INTENT_INTEGRATION_LOGIN = "com.tailscale.ipn.integration.LOGIN";
     private static final String INTENT_USE_EXIT_NODE = "com.tailscale.ipn.USE_EXIT_NODE";
 
-    // Unique work names prevent connect/disconnect flapping from enqueuing a long backlog.
-    private static final String WORK_CONNECT = "ipn-connect-vpn";
-    private static final String WORK_DISCONNECT = "ipn-disconnect-vpn";
-    private static final String WORK_USE_EXIT_NODE = "ipn-use-exit-node";
-
     @Override
     public void onReceive(Context context, Intent intent) {
         if (intent == null) return;
 
-        final WorkManager workManager = WorkManager.getInstance(context);
         final String action = intent.getAction();
 
         if (Objects.equals(action, INTENT_CONNECT_VPN)) {
-            OneTimeWorkRequest req =
-                    new OneTimeWorkRequest.Builder(StartVPNWorker.class)
-                            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                            .addTag(WORK_CONNECT)
-                            .build();
-
-            workManager.enqueueUniqueWork(WORK_CONNECT, ExistingWorkPolicy.REPLACE, req);
+            // A notification/broadcast cannot mint process authority or launch platform VPN
+            // consent. It may reuse only an exact still-live Connect capability; otherwise route
+            // the user through the passive Activity and its separate Connect button.
+            if (!TailwareActivationCapability.hasVpnCapability()
+                    || !UninitializedApp.get().startVPN()) {
+                openPassiveApp(context);
+            }
 
         } else if (Objects.equals(action, INTENT_DISCONNECT_VPN)) {
-            OneTimeWorkRequest req =
-                    new OneTimeWorkRequest.Builder(StopVPNWorker.class)
-                            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                            .addTag(WORK_DISCONNECT)
-                            .build();
-
-            workManager.enqueueUniqueWork(WORK_DISCONNECT, ExistingWorkPolicy.REPLACE, req);
+            // Reserve ordering now, then persist/dispatch on IO. The coordinator makes a later
+            // Connect supersede this queued request before it can write OFF; the broadcast thread
+            // never waits behind SharedPreferences or a slow LocalAPI operation.
+            if (!TailwareActivationCapability.hasEngineCapability()) {
+                openPassiveApp(context);
+                return;
+            }
+            UninitializedApp app = UninitializedApp.get();
+            PendingResult pendingResult = goAsync();
+            app.stopVPNCommandAsync(
+                    dispatch -> {
+                        try {
+                            if (!dispatch.getSuperseded() && !dispatch.getStopSafelyHandled()) {
+                                StartVPNWorker.notifyVpnStopFailed(app);
+                            }
+                        } finally {
+                            pendingResult.finish();
+                        }
+                    });
 
         } else if (Objects.equals(action, INTENT_USE_EXIT_NODE)) {
-            String exitNode = intent.getStringExtra("exitNode");
-            boolean allowLanAccess = intent.getBooleanExtra("allowLanAccess", false);
-
-            Data input =
-                    new Data.Builder()
-                            .putString(UseExitNodeWorker.EXIT_NODE_NAME, exitNode)
-                            .putBoolean(UseExitNodeWorker.ALLOW_LAN_ACCESS, allowLanAccess)
-                            .build();
-
-            OneTimeWorkRequest req =
-                    new OneTimeWorkRequest.Builder(UseExitNodeWorker.class)
-                            .setInputData(input)
-                            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                            .addTag(WORK_USE_EXIT_NODE)
-                            .build();
-
-            workManager.enqueueUniqueWork(WORK_USE_EXIT_NODE, ExistingWorkPolicy.REPLACE, req);
+            // Retired for P0 containment. A persisted/background Worker cannot prove a current
+            // foreground activation gesture.
+            openPassiveApp(context);
         } else if (BuildConfig.DEBUG && Objects.equals(action, INTENT_INTEGRATION_LOGIN)) {
-            Data input =
-                    new Data.Builder()
-                            .putString(
-                                    IntegrationLoginWorker.EXTRA_CONTROL_URL,
-                                    intent.getStringExtra(
-                                            IntegrationLoginWorker.EXTRA_CONTROL_URL))
-                            .putString(
-                                    IntegrationLoginWorker.EXTRA_AUTH_KEY,
-                                    intent.getStringExtra(IntegrationLoginWorker.EXTRA_AUTH_KEY))
-                            .build();
+            // Debug automation is intentionally unavailable in the production component graph.
+            openPassiveApp(context);
+        }
+    }
 
-            OneTimeWorkRequest req =
-                    new OneTimeWorkRequest.Builder(IntegrationLoginWorker.class)
-                            .setInputData(input)
-                            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                            .addTag(IntegrationLoginWorker.WORK_NAME)
-                            .build();
-
-            workManager.enqueueUniqueWork(
-                    IntegrationLoginWorker.WORK_NAME, ExistingWorkPolicy.REPLACE, req);
+    private static void openPassiveApp(Context context) {
+        Intent activity = new Intent(context, WearMainActivity.class);
+        try {
+            PendingIntent.getActivity(
+                            context,
+                            0,
+                            activity,
+                            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)
+                    .send();
+        } catch (PendingIntent.CanceledException | RuntimeException ignored) {
+            // Background-start policy may refuse the launch. The important invariant is that the
+            // receiver still performs no engine, login, VPN, or WorkManager action.
         }
     }
 }

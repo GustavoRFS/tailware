@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">Buộc nút kết nối luôn bật</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">Ngăn người dùng ngắt kết nối Tailscale.</string>
+    <string name="exit_node_id">ID nút thoát</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">Buộc ứng dụng Tailscale luôn dùng nút thoát có ID đã chỉ định.</string>
+    <string name="managed_by_organization_name">Được quản lý bởi – tên tổ chức</string>
+    <string name="shows_the_given_organization_name_in_the_client">Hiển thị tên tổ chức đã chỉ định trong ứng dụng.</string>
+    <string name="managed_by_caption">Được quản lý bởi – chú thích</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">Hiển thị chú thích đã chỉ định bên cạnh tên tổ chức.</string>
+    <string name="managed_by_url">Được quản lý bởi – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">Hiển thị nút mở tài nguyên hỗ trợ bên cạnh tên tổ chức.</string>
+    <string name="required_suggested_tailnet">Tailnet bắt buộc/đề xuất</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">Chính sách tailnet cho phép tổ chức chỉ định một tailnet có nhà cung cấp danh tính được dùng trên trang đăng nhập. Nếu giá trị bắt đầu bằng required:, Tailscale bắt buộc nhà cung cấp đó và không cho phép cách đăng nhập khác.</string>
+    <string name="custom_control_server_url">URL máy chủ điều khiển tùy chỉnh</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">Dùng trường này để chỉ định URL máy chủ điều phối tùy chỉnh, chẳng hạn một phiên bản Headscale.</string>
+    <string name="hidden_network_devices">Thiết bị mạng bị ẩn</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">Ẩn các loại thiết bị mạng đã chỉ định khỏi danh sách thiết bị trong ứng dụng.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">Cho phép truy cập LAN khi dùng nút thoát</string>
+    <string name="enable_posture_checking">Bật kiểm tra trạng thái thiết bị</string>
+    <string name="device_serial_number">Số sê-ri của thiết bị đang chạy Tailscale</string>
+    <string name="device_serial_number_descr">Cho phép quản trị viên gửi số sê-ri thiết bị đến ứng dụng Tailscale qua MDM.</string>
+    <string name="use_tailscale_dns_settings">Dùng cài đặt DNS Tailscale</string>
+    <string name="use_tailscale_subnets">Dùng mạng con Tailscale</string>
+    <string name="allow_incoming_connections">Cho phép kết nối đến</string>
+    <string name="exit_node_picker_visibility">Hiển thị bộ chọn nút thoát</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">Hiện hoặc ẩn bộ chọn nút thoát trong màn hình chính của ứng dụng.</string>
+    <string name="manage_tailnet_lock_visibility">Hiển thị quản lý Tailnet Lock</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">Hiện hoặc ẩn giao diện cấu hình Tailnet Lock.</string>
+    <string name="run_as_exit_node_visibility">Hiển thị chạy dưới dạng nút thoát</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">Hiện hoặc ẩn giao diện chạy thiết bị Android dưới dạng nút thoát.</string>
+    <string name="excluded_packages">Gói bị loại trừ</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">Chỉ định các ứng dụng bị loại khỏi tuyến và DNS Tailscale ngay cả khi Tailscale đang chạy. Mọi ứng dụng khác dùng Tailscale.</string>
+    <string name="included_packages">Gói được bao gồm</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">Chỉ định các ứng dụng luôn dùng tuyến và DNS Tailscale khi Tailscale đang chạy. Nếu danh sách không trống, các ứng dụng khác không dùng Tailscale.</string>
+    <string name="auth_key">Khóa xác thực</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">Xác định khóa xác thực dùng để đăng nhập.</string>
+    <string name="hostname">Tên máy chủ</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">Chỉ định tên thiết bị dùng thay cho tên tự động.</string>
+    <string name="onboarding_flow">Bỏ qua quy trình giới thiệu</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">Bỏ qua trang giới thiệu khi ứng dụng được mở lần đầu.</string>
+    <string name="enable_hardware_attestation">Bật chứng thực phần cứng</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">Dùng khóa được phần cứng bảo vệ để liên kết danh tính nút với thiết bị.</string>
+    <string-array name="hidden_network_devices_labels"><item>Thiết bị của người dùng hiện tại</item><item>Thiết bị của người dùng khác</item><item>Thiết bị được gắn thẻ</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>Luôn luôn</item><item>Không bao giờ</item><item>Người dùng quyết định</item></string-array>
+    <string-array name="show_hide_labels"><item>Hiện</item><item>Ẩn</item></string-array>
+</resources>

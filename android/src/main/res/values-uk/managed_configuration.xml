@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">Примусово ввімкнути перемикач підключення</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">Не дозволяє користувачу відключити Tailscale.</string>
+    <string name="exit_node_id">Ідентифікатор вихідного вузла</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">Змушує клієнт Tailscale завжди використовувати вихідний вузол із зазначеним ідентифікатором.</string>
+    <string name="managed_by_organization_name">Керується – назва організації</string>
+    <string name="shows_the_given_organization_name_in_the_client">Показує зазначену назву організації в клієнті.</string>
+    <string name="managed_by_caption">Керується – підпис</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">Показує зазначений підпис поруч із назвою організації.</string>
+    <string name="managed_by_url">Керується – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">Показує поруч із назвою організації кнопку для відкриття ресурсів підтримки.</string>
+    <string name="required_suggested_tailnet">Обов’язкова/запропонована мережа Tailnet</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">Політика tailnet дозволяє організації вказати tailnet, постачальник ідентифікації якої використовуватиметься на сторінці входу. Якщо значення починається з required:, Tailscale примусово використовує цього постачальника й не дозволяє інші способи входу.</string>
+    <string name="custom_control_server_url">URL власного сервера керування</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">Укажіть тут URL власного сервера координації, наприклад екземпляра Headscale.</string>
+    <string name="hidden_network_devices">Приховані мережеві пристрої</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">Приховує зазначені категорії мережевих пристроїв зі списку пристроїв клієнта.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">Дозволити доступ до LAN через вихідний вузол</string>
+    <string name="enable_posture_checking">Увімкнути перевірку стану пристрою</string>
+    <string name="device_serial_number">Серійний номер пристрою, на якому працює Tailscale</string>
+    <string name="device_serial_number_descr">Дозволяє адміністраторам передавати серійний номер пристрою клієнту Tailscale через MDM.</string>
+    <string name="use_tailscale_dns_settings">Використовувати налаштування DNS Tailscale</string>
+    <string name="use_tailscale_subnets">Використовувати підмережі Tailscale</string>
+    <string name="allow_incoming_connections">Дозволити вхідні підключення</string>
+    <string name="exit_node_picker_visibility">Видимість вибору вихідного вузла</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">Показує або приховує вибір вихідного вузла в головному поданні застосунку.</string>
+    <string name="manage_tailnet_lock_visibility">Видимість керування Tailnet Lock</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">Показує або приховує інтерфейс налаштування Tailnet Lock.</string>
+    <string name="run_as_exit_node_visibility">Видимість режиму вихідного вузла</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">Показує або приховує інтерфейс запуску пристрою Android як вихідного вузла.</string>
+    <string name="excluded_packages">Виключені пакети</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">Визначає застосунки, виключені з маршрутів і DNS Tailscale, навіть коли Tailscale працює. Усі інші застосунки використовують Tailscale.</string>
+    <string name="included_packages">Включені пакети</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">Визначає застосунки, які завжди використовують маршрути й DNS Tailscale, коли Tailscale працює. Якщо список не порожній, інші застосунки не використовують Tailscale.</string>
+    <string name="auth_key">Ключ автентифікації</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">Визначає ключ автентифікації для входу.</string>
+    <string name="hostname">Ім’я хоста</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">Визначає ім’я пристрою замість автоматично вибраного.</string>
+    <string name="onboarding_flow">Пропустити початкове налаштування</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">Пропускає вступну сторінку під час першого відкриття застосунку.</string>
+    <string name="enable_hardware_attestation">Увімкнути апаратну атестацію</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">Використовує апаратно захищені ключі для прив’язки ідентичності вузла до пристрою.</string>
+    <string-array name="hidden_network_devices_labels"><item>Пристрої поточного користувача</item><item>Пристрої інших користувачів</item><item>Пристрої з тегами</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>Завжди</item><item>Ніколи</item><item>Вирішує користувач</item></string-array>
+    <string-array name="show_hide_labels"><item>Показати</item><item>Приховати</item></string-array>
+</resources>

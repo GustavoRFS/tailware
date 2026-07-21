@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">فرض تفعيل مفتاح الاتصال</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">يمنع المستخدم من قطع اتصال Tailscale.</string>
+    <string name="exit_node_id">معرّف عقدة الخروج</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">يفرض على عميل Tailscale استخدام عقدة الخروج ذات المعرّف المحدد دائمًا.</string>
+    <string name="managed_by_organization_name">تحت إدارة – اسم المؤسسة</string>
+    <string name="shows_the_given_organization_name_in_the_client">يعرض اسم المؤسسة المحدد في العميل.</string>
+    <string name="managed_by_caption">تحت إدارة – التسمية التوضيحية</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">يعرض التسمية المحددة بجوار اسم المؤسسة في العميل.</string>
+    <string name="managed_by_url">تحت إدارة – عنوان URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">يعرض زرًا لفتح موارد الدعم بجوار اسم المؤسسة.</string>
+    <string name="required_suggested_tailnet">شبكة Tailnet مطلوبة/مقترحة</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">تسمح سياسة tailnet للمؤسسة بتحديد tailnet يُستخدم موفّر هويتها في صفحة تسجيل الدخول. إذا بدأت القيمة بـ required:، يفرض Tailscale ذلك الموفّر ولا يسمح بأي طريقة أخرى لتسجيل الدخول.</string>
+    <string name="custom_control_server_url">عنوان URL لخادم تحكم مخصص</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">استخدم هذا الحقل لتحديد عنوان URL لخادم تنسيق مخصص، مثل مثيل Headscale.</string>
+    <string name="hidden_network_devices">أجهزة الشبكة المخفية</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">يخفي فئات أجهزة الشبكة المحددة من قائمة الأجهزة في العميل.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">السماح بالوصول إلى LAN عند استخدام عقدة خروج</string>
+    <string name="enable_posture_checking">تفعيل التحقق من حالة الجهاز</string>
+    <string name="device_serial_number">الرقم التسلسلي للجهاز الذي يشغّل Tailscale</string>
+    <string name="device_serial_number_descr">يسمح للمشرفين بتمرير الرقم التسلسلي للجهاز إلى عميل Tailscale باستخدام MDM.</string>
+    <string name="use_tailscale_dns_settings">استخدام إعدادات DNS في Tailscale</string>
+    <string name="use_tailscale_subnets">استخدام شبكات Tailscale الفرعية</string>
+    <string name="allow_incoming_connections">السماح بالاتصالات الواردة</string>
+    <string name="exit_node_picker_visibility">ظهور منتقي عقدة الخروج</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">يُظهر منتقي عقدة الخروج أو يخفيه في العرض الرئيسي للتطبيق.</string>
+    <string name="manage_tailnet_lock_visibility">ظهور إدارة Tailnet Lock</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">يُظهر واجهة إعداد Tailnet Lock أو يخفيها.</string>
+    <string name="run_as_exit_node_visibility">ظهور التشغيل كعقدة خروج</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">يُظهر واجهة تشغيل جهاز Android كعقدة خروج أو يخفيها.</string>
+    <string name="excluded_packages">الحزم المستبعدة</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">يحدد التطبيقات المستبعدة من مسارات Tailscale وDNS حتى أثناء تشغيل Tailscale. تستخدم كل التطبيقات الأخرى Tailscale.</string>
+    <string name="included_packages">الحزم المضمنة</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">يحدد التطبيقات التي تستخدم دائمًا مسارات Tailscale وDNS أثناء تشغيل Tailscale. إذا لم تكن القائمة فارغة فلن تستخدم التطبيقات الأخرى Tailscale.</string>
+    <string name="auth_key">مفتاح المصادقة</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">يحدد مفتاح مصادقة يُستخدم لتسجيل الدخول.</string>
+    <string name="hostname">اسم المضيف</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">يحدد اسم جهاز لاستخدامه بدلًا من الاسم التلقائي.</string>
+    <string name="onboarding_flow">تخطي خطوات البدء</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">يتخطى صفحة المقدمة التي تظهر عند فتح التطبيق لأول مرة.</string>
+    <string name="enable_hardware_attestation">تفعيل التصديق على الأجهزة</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">يستخدم مفاتيح مدعومة بالأجهزة لربط هوية العقدة بالجهاز.</string>
+    <string-array name="hidden_network_devices_labels"><item>أجهزة المستخدم الحالي</item><item>أجهزة المستخدمين الآخرين</item><item>الأجهزة ذات العلامات</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>دائمًا</item><item>أبدًا</item><item>يقرر المستخدم</item></string-array>
+    <string-array name="show_hide_labels"><item>إظهار</item><item>إخفاء</item></string-array>
+</resources>

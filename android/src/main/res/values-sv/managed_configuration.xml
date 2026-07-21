@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">Tvinga aktiverat anslutningsreglage</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">Hindrar användaren från att koppla från Tailscale.</string>
+    <string name="exit_node_id">ID för utgångsnod</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">Tvingar Tailscale-klienten att alltid använda utgångsnoden med angivet ID.</string>
+    <string name="managed_by_organization_name">Hanteras av – organisationsnamn</string>
+    <string name="shows_the_given_organization_name_in_the_client">Visar det angivna organisationsnamnet i klienten.</string>
+    <string name="managed_by_caption">Hanteras av – bildtext</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">Visar den angivna bildtexten bredvid organisationsnamnet.</string>
+    <string name="managed_by_url">Hanteras av – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">Visar en knapp för supportresurser bredvid organisationsnamnet.</string>
+    <string name="required_suggested_tailnet">Obligatoriskt/föreslaget Tailnet</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">Policyn för tailnet låter organisationen ange ett tailnet vars identitetsleverantör används på inloggningssidan. Om värdet börjar med required: tvingar Tailscale den leverantören och tillåter ingen annan inloggning.</string>
+    <string name="custom_control_server_url">URL till anpassad kontrollserver</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">Ange URL till en anpassad samordningsserver, till exempel en Headscale-instans.</string>
+    <string name="hidden_network_devices">Dolda nätverksenheter</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">Döljer angivna kategorier av nätverksenheter från klientens enhetslista.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">Tillåt LAN-åtkomst med utgångsnod</string>
+    <string name="enable_posture_checking">Aktivera kontroll av enhetsstatus</string>
+    <string name="device_serial_number">Serienummer för enheten som kör Tailscale</string>
+    <string name="device_serial_number_descr">Låter administratörer skicka enhetens serienummer till Tailscale-klienten via MDM.</string>
+    <string name="use_tailscale_dns_settings">Använd Tailscale DNS-inställningar</string>
+    <string name="use_tailscale_subnets">Använd Tailscale-undernät</string>
+    <string name="allow_incoming_connections">Tillåt inkommande anslutningar</string>
+    <string name="exit_node_picker_visibility">Synlighet för val av utgångsnod</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">Visar eller döljer valet av utgångsnod i appens huvudvy.</string>
+    <string name="manage_tailnet_lock_visibility">Synlighet för hantering av Tailnet Lock</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">Visar eller döljer konfigurationsgränssnittet för Tailnet Lock.</string>
+    <string name="run_as_exit_node_visibility">Synlighet för körning som utgångsnod</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">Visar eller döljer gränssnittet för att köra Android-enheten som utgångsnod.</string>
+    <string name="excluded_packages">Exkluderade paket</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">Anger appar som utesluts från Tailscale-rutter och DNS även när Tailscale körs. Alla andra appar använder Tailscale.</string>
+    <string name="included_packages">Inkluderade paket</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">Anger appar som alltid använder Tailscale-rutter och DNS när Tailscale körs. Om listan inte är tom använder övriga appar inte Tailscale.</string>
+    <string name="auth_key">Autentiseringsnyckel</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">Anger en autentiseringsnyckel som används för inloggning.</string>
+    <string name="hostname">Värdnamn</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">Anger ett enhetsnamn som används i stället för det automatiska.</string>
+    <string name="onboarding_flow">Hoppa över introduktionsflödet</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">Hoppar över introduktionssidan som visas första gången appen öppnas.</string>
+    <string name="enable_hardware_attestation">Aktivera maskinvaruattestering</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">Använder maskinvaruskyddade nycklar för att binda nodidentiteten till enheten.</string>
+    <string-array name="hidden_network_devices_labels"><item>Aktuell användares enheter</item><item>Andra användares enheter</item><item>Taggade enheter</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>Alltid</item><item>Aldrig</item><item>Användaren bestämmer</item></string-array>
+    <string-array name="show_hide_labels"><item>Visa</item><item>Dölj</item></string-array>
+</resources>

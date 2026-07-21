@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="connect">Подключить</string>
-    <string name="disconnect">Отключить</string>
-    <string name="connected">Подключено</string>
-    <string name="using_exit_node">Используется выходной узел (%s)</string>
-    <string name="not_connected">Не подключено</string>
-    <string name="starting">Запуск…</string>
-</resources>

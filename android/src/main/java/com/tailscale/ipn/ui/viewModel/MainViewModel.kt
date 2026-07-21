@@ -187,6 +187,10 @@ class MainViewModel(private val appViewModel: AppViewModel) : IpnViewModel() {
   }
 
   fun showVPNPermissionLauncherIfUnauthorized() {
+    if (!com.tailscale.ipn.wear.TailwareActivationCapability.hasVpnCapability()) {
+      _requestVpnPermission.value = false
+      return
+    }
     val vpnIntent = VpnService.prepare(App.get())
     TSLog.d("VpnPermissions", "vpnIntent=$vpnIntent")
     if (vpnIntent != null) {

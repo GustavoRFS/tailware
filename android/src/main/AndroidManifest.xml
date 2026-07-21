@@ -22,6 +22,11 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
+    <!--
+      Resource qualifiers retain Android's legacy values-in/values-iw aliases, while localeConfig
+      correctly uses the canonical BCP-47 tags id/he. AGP lint 8.10 does not normalize those alias
+      pairs for UnusedTranslation, so suppress only that false-positive at the application root.
+    -->
     <application
         android:name=".App"
         android:allowBackup="false"
@@ -32,8 +37,10 @@
         android:localeConfig="@xml/locales_config"
         android:requestLegacyExternalStorage="true"
         android:roundIcon="@drawable/tailware_mark"
+        android:supportsRtl="true"
         android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.App.SplashScreen"
+        tools:ignore="UnusedTranslation"
         tools:targetApi="tiramisu">
         <activity
             android:name=".wear.WearMainActivity"
@@ -111,5 +118,60 @@
         <meta-data
             android:name="android.content.APP_RESTRICTIONS"
             android:resource="@xml/app_restrictions" />
+
+        <!--
+          P0 containment: private.5 may leave WorkManager rows/jobs behind. AndroidX Startup runs
+          providers before App.onCreate, so permitting its WorkManager initializer or scheduler
+          components would allow cold constraint/network tracking before the preference migration
+          and before any current-process activation capability. Tailware no longer schedules
+          background work; compatibility Worker classes remain inert solely for source/ABI
+          continuity.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                tools:node="remove" />
+        </provider>
+        <service
+            android:name="androidx.work.impl.background.systemalarm.SystemAlarmService"
+            tools:node="remove" />
+        <service
+            android:name="androidx.work.impl.background.systemjob.SystemJobService"
+            tools:node="remove" />
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.utils.ForceStopRunnable$BroadcastReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$BatteryChargingProxy"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$BatteryNotLowProxy"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$StorageNotLowProxy"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$NetworkStateProxy"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.RescheduleReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxyUpdateReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.diagnostics.DiagnosticsReceiver"
+            tools:node="remove" />
+        <activity
+            android:name="androidx.compose.ui.tooling.PreviewActivity"
+            android:taskAffinity=""
+            tools:node="remove" />
     </application>
 </manifest>

@@ -10,9 +10,12 @@ import (
 	"net/netip"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/tailscale/tailscale-android/libtailscale/ifaceparse"
+	"github.com/tailscale/tailscale-android/libtailscale/internal/vpnauthorization"
+	"github.com/tailscale/tailscale-android/libtailscale/internal/vpnstatus"
 	rangescalc "github.com/tailscale/tailscale-android/libtailscale/ranges_calc"
 	"github.com/tailscale/wireguard-go/tun"
 	"tailscale.com/net/dns"
@@ -35,10 +38,17 @@ var errMultipleUsers = errors.New("VPN cannot be created on this device due to a
 // VpnService contains the Android service that owns the currently processed
 // desired-state command.
 type VpnService struct {
-	service           IPNService
-	serviceID         string
-	commandGeneration int64
-	commandKind       vpnServiceCommandKind
+	mu                     sync.Mutex
+	service                IPNService
+	serviceID              string
+	commandGeneration      int64
+	commandKind            vpnServiceCommandKind
+	target                 vpnTeardownTarget
+	teardown               *vpnTeardown
+	lastAckGeneration      int64
+	lastAckServices        map[string]struct{}
+	completedTeardowns     map[string]struct{}
+	completedTeardownOrder []string
 }
 
 var vpnService = &VpnService{}
@@ -50,6 +60,8 @@ type vpnServiceSnapshot struct {
 }
 
 func currentVPNServiceSnapshot() (vpnServiceSnapshot, bool) {
+	vpnService.mu.Lock()
+	defer vpnService.mu.Unlock()
 	if vpnService.service == nil {
 		return vpnServiceSnapshot{}, false
 	}
@@ -61,13 +73,72 @@ func currentVPNServiceSnapshot() (vpnServiceSnapshot, bool) {
 }
 
 func (s vpnServiceSnapshot) isDesiredCommandCurrent() bool {
-	return s.service != nil && s.service.CommandGeneration() == s.commandGeneration
+	return vpnauthorization.IsCommandAuthorized(s.service, s.commandGeneration)
 }
 
 func (s vpnServiceSnapshot) isProcessedCommandCurrent() bool {
+	vpnService.mu.Lock()
+	defer vpnService.mu.Unlock()
+	return s.isProcessedCommandCurrentLocked()
+}
+
+func (s vpnServiceSnapshot) isProcessedCommandCurrentLocked() bool {
 	return vpnService.service != nil &&
 		vpnService.serviceID == s.serviceID &&
-		vpnService.commandGeneration == s.commandGeneration
+		vpnService.commandGeneration == s.commandGeneration &&
+		vpnService.commandKind == vpnServiceCommandStart &&
+		vpnService.teardown == nil
+}
+
+func (s vpnServiceSnapshot) isCurrent() bool {
+	return s.isDesiredCommandCurrent() && s.isProcessedCommandCurrent()
+}
+
+// enterTUNOperation registers descriptor-producing work under the exact
+// processed owner. beginVPNTeardown changes that owner while holding the same
+// mutex before waiting on backend.tunOps, so Wait can never race a new Add and
+// teardown acknowledgement necessarily fences builders that were already in
+// flight.
+func (s vpnServiceSnapshot) enterTUNOperation(b *backend) (func(), bool) {
+	if !s.isDesiredCommandCurrent() {
+		return func() {}, false
+	}
+	vpnService.mu.Lock()
+	defer vpnService.mu.Unlock()
+	if !s.isProcessedCommandCurrentLocked() {
+		return func() {}, false
+	}
+	b.tunOps.Add(1)
+	return b.tunOps.Done, true
+}
+
+func (s vpnServiceSnapshot) addTUNIfCurrent(devices *multiTUN, dev tun.Device) bool {
+	if !s.isDesiredCommandCurrent() {
+		return false
+	}
+	vpnService.mu.Lock()
+	current := s.isProcessedCommandCurrentLocked()
+	vpnService.mu.Unlock()
+	if !current {
+		return false
+	}
+	// updateTUN already owns a tunOps lease. Do not hold the global ownership
+	// mutex across multiTUN's channel send: teardown may install its barrier in
+	// parallel, then wait for this lease and perform a final descriptor sweep.
+	devices.add(dev)
+	return true
+}
+
+func (s vpnServiceSnapshot) bringTUNUpIfCurrent(devices *multiTUN) (current, changed bool) {
+	if !s.isDesiredCommandCurrent() {
+		return false, false
+	}
+	vpnService.mu.Lock()
+	defer vpnService.mu.Unlock()
+	if !s.isProcessedCommandCurrentLocked() {
+		return false, false
+	}
+	return true, devices.Up()
 }
 
 // Report interfaces in the device in net.Interface format.
@@ -109,7 +180,8 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 	b.logger.Logf("updateTUN: changed")
 	defer b.logger.Logf("updateTUN: finished")
 
-	if !service.isDesiredCommandCurrent() {
+	leaveTUNOperation, entered := service.enterTUNOperation(b)
+	if !entered {
 		b.logger.Logf(
 			"updateTUN: skipping superseded service=%q generation=%d",
 			service.serviceID,
@@ -117,6 +189,7 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 		)
 		return nil
 	}
+	defer leaveTUNOperation()
 
 	if disableTUN := len(rcfg.LocalAddrs) == 0; disableTUN {
 		b.logger.Logf("updateTUN: closing old TUNs")
@@ -135,6 +208,20 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 		// TODO(nickkhyl): revisit and simplify the [multiTUN] implementation?
 		if b.devices.Down() {
 			b.logger.Logf("updateTUN: tunnel brought down: %v", err)
+		}
+		if service.isProcessedCommandCurrent() &&
+			vpnstatus.PublishIfCurrent(service.service, service.commandGeneration, false) {
+			b.logger.Logf(
+				"updateTUN: reported closed tunnel for service=%q generation=%d",
+				service.serviceID,
+				service.commandGeneration,
+			)
+		} else {
+			b.logger.Logf(
+				"updateTUN: skipped closed-tunnel status for superseded service=%q generation=%d",
+				service.serviceID,
+				service.commandGeneration,
+			)
 		}
 		return nil
 	}
@@ -240,8 +327,8 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 		if strings.Contains(err.Error(), "INTERACT_ACROSS_USERS") {
 			// Update VPN status if VPN interface cannot be created
 			b.logger.Logf("updateTUN: could not establish VPN because %v", err)
-			if service.isDesiredCommandCurrent() {
-				service.service.UpdateVpnStatus(false)
+			if service.isCurrent() {
+				service.service.UpdateVpnStatus(false, service.commandGeneration)
 			}
 			return errMultipleUsers
 		}
@@ -259,7 +346,7 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 	}
 	b.logger.Logf("updateTUN: detached FD")
 
-	if !service.isDesiredCommandCurrent() {
+	if !service.isCurrent() {
 		b.logger.Logf(
 			"updateTUN: discarding superseded FD for service=%q generation=%d",
 			service.serviceID,
@@ -277,7 +364,7 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 	}
 	b.logger.Logf("updateTUN: created TUN device")
 
-	if !service.isDesiredCommandCurrent() {
+	if !service.isCurrent() {
 		b.logger.Logf(
 			"updateTUN: discarding superseded TUN for service=%q generation=%d",
 			service.serviceID,
@@ -289,10 +376,20 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 		return nil
 	}
 
-	b.devices.add(tunDev)
+	if !service.addTUNIfCurrent(b.devices, tunDev) {
+		b.logger.Logf(
+			"updateTUN: refusing TUN publication for superseded service=%q generation=%d",
+			service.serviceID,
+			service.commandGeneration,
+		)
+		if err := tunDev.Close(); err != nil {
+			b.logger.Logf("updateTUN: closing unpublished TUN: %v", err)
+		}
+		return nil
+	}
 	b.logger.Logf("updateTUN: added TUN device")
 
-	if !service.isDesiredCommandCurrent() {
+	if !service.isCurrent() {
 		b.logger.Logf(
 			"updateTUN: shutting down superseded TUN for service=%q generation=%d",
 			service.serviceID,
@@ -303,11 +400,22 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 		return nil
 	}
 
-	if b.devices.Up() {
+	current, broughtUp := service.bringTUNUpIfCurrent(b.devices)
+	if !current {
+		b.logger.Logf(
+			"updateTUN: refusing TUN activation for superseded service=%q generation=%d",
+			service.serviceID,
+			service.commandGeneration,
+		)
+		b.CloseTUNs()
+		b.devices.Down()
+		return nil
+	}
+	if broughtUp {
 		b.logger.Logf("tunnel brought up")
 	}
 
-	if !service.isDesiredCommandCurrent() {
+	if !service.isCurrent() {
 		b.logger.Logf(
 			"updateTUN: stopping TUN superseded during activation for service=%q generation=%d",
 			service.serviceID,
@@ -318,9 +426,17 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 		return nil
 	}
 
-	b.lastCfg = rcfg
-	b.lastDNSCfg = dcfg
-	if !service.isDesiredCommandCurrent() {
+	if !b.publishTUNConfigIfCurrent(service, rcfg, dcfg) {
+		b.logger.Logf(
+			"updateTUN: refusing config publication for superseded service=%q generation=%d",
+			service.serviceID,
+			service.commandGeneration,
+		)
+		b.CloseTUNs()
+		b.devices.Down()
+		return nil
+	}
+	if !service.isCurrent() {
 		b.logger.Logf(
 			"updateTUN: stopping TUN superseded before status publication for service=%q generation=%d",
 			service.serviceID,
@@ -331,7 +447,7 @@ func (b *backend) updateTUN(rcfg *router.Config, dcfg *dns.OSConfig, service vpn
 		return nil
 	}
 	log.Printf("Setting vpn activity status to true")
-	service.service.UpdateVpnStatus(true)
+	service.service.UpdateVpnStatus(true, service.commandGeneration)
 	return nil
 }
 
@@ -343,8 +459,27 @@ func closeRawFileDescriptor(fd int32) {
 
 // CloseVPN closes any active TUN devices.
 func (b *backend) CloseTUNs() {
+	b.tunConfigMu.Lock()
 	b.lastCfg = nil
+	b.lastDNSCfg = nil
+	b.tunConfigMu.Unlock()
 	b.devices.Shutdown()
+}
+
+func (b *backend) publishTUNConfigIfCurrent(service vpnServiceSnapshot, rcfg *router.Config, dcfg *dns.OSConfig) bool {
+	if !service.isDesiredCommandCurrent() {
+		return false
+	}
+	vpnService.mu.Lock()
+	defer vpnService.mu.Unlock()
+	if !service.isProcessedCommandCurrentLocked() {
+		return false
+	}
+	b.tunConfigMu.Lock()
+	b.lastCfg = rcfg
+	b.lastDNSCfg = dcfg
+	b.tunConfigMu.Unlock()
+	return true
 }
 
 // ifname is the interface name retrieved from LinkProperties on network change. If a network is lost, an empty string is passed in.
@@ -412,5 +547,10 @@ func (b *backend) getPlatformDNSConfig() string {
 }
 
 func (b *backend) setCfg(rcfg *router.Config, dcfg *dns.OSConfig) error {
-	return b.settings(rcfg, dcfg)
+	ctx, leave, ok := b.callbacks.Enter()
+	if !ok {
+		return ctx.Err()
+	}
+	defer leave()
+	return b.settings(ctx, rcfg, dcfg)
 }

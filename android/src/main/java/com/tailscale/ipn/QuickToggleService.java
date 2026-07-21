@@ -62,43 +62,14 @@ public class QuickToggleService extends TileService {
 
     @Override
     public void onClick() {
-        unlockAndRun(this::secureOnClick);
-    }
-
-    @SuppressWarnings("deprecation")                                                                                                                    
-    private void secureOnClick() {
-        boolean ableToStart;
-        synchronized (lock) {
-            ableToStart = UninitializedApp.get().isAbleToStartVPN();
-        }
-        if (!ableToStart) {
-            launchMainActivity();
-            return;
-        }
-        App.get();
-        onTileClick();
-    }
-
-    private void onTileClick() {                                                                                                                          
-      UninitializedApp app = UninitializedApp.get();                                                                                                    
-      boolean needsToStop;                                                                                                                            
-      synchronized (lock) {
-          needsToStop = isRunning;
-      }
-      if (needsToStop) {
-          app.stopVPN();
-      } else {
-          boolean vpnPrepared = App.get().getAppScopedViewModel().getVpnPrepared().getValue();
-          if (vpnPrepared) {
-              app.startVPN();
-          } else {
-              launchMainActivity();
-          }
-      }
+        // Quick Settings services can be recreated from stored state. They never mint or consume
+        // engine/VPN authority; the Activity opens in its passive screen instead.
+        unlockAndRun(this::launchMainActivity);
     }
 
     private void launchMainActivity() {
       Intent i = getPackageManager().getLaunchIntentForPackage(getPackageName());
+      if (i == null) return;
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
         // Request code for opening activity.
           startActivityAndCollapse(PendingIntent.getActivity(this, 0, i,

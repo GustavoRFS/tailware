@@ -54,6 +54,48 @@ class HealthNotifierTest {
 
   private fun emptyHealth(): Health.State = Health.State(Warnings = emptyMap())
 
+  private fun warning(
+      code: String,
+      severity: Health.Severity,
+      text: String = severity.name,
+  ) =
+      UnhealthyState(
+          WarnableCode = code,
+          Severity = severity,
+          Title = code,
+          Text = text,
+      )
+
+  @Test
+  fun replacementHighWarningWithSameCodeIsNotCancelledAfterRepost() {
+    val oldHigh = warning("same-code", Health.Severity.high, text = "old")
+    val replacementHigh = warning("same-code", Health.Severity.high, text = "replacement")
+
+    assertTrue(
+        "A newly reposted high notification with the same ID must remain published",
+        "same-code" !in
+            healthNotificationCodesToRemove(
+                droppedWarnings = setOf(oldHigh),
+                remainingWarnings = setOf(replacementHigh),
+            ),
+    )
+  }
+
+  @Test
+  fun highWarningDowngradedWithSameCodeCancelsOldSystemNotification() {
+    val oldHigh = warning("same-code", Health.Severity.high)
+
+    for (replacementSeverity in listOf(Health.Severity.medium, Health.Severity.low)) {
+      assertEquals(
+          setOf("same-code"),
+          healthNotificationCodesToRemove(
+              droppedWarnings = setOf(oldHigh),
+              remainingWarnings = setOf(warning("same-code", replacementSeverity)),
+          ),
+      )
+    }
+  }
+
   @Before
   fun setUp() {
     val logMock = mock(LibtailscaleWrapper::class.java)

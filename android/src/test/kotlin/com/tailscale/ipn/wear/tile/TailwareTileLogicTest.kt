@@ -12,26 +12,18 @@ import org.junit.Test
 
 class TailwareTileLogicTest {
   @Test
-  fun tileTapStartsFromPersistedOffStateWhenSetupIsReady() {
+  fun tileTapOpensPassiveAppEvenWhenSetupIsReady() {
     assertEquals(
-        TileToggleDecision.Start,
-        tileToggleDecision(
-            desiredVpnEnabled = false,
-            vpnAuthorized = true,
-            ableToStartVpn = true,
-        ),
+        TileToggleDecision.OpenApp,
+        tileToggleDecision(desiredVpnEnabled = false, vpnAuthorized = true, ableToStartVpn = true),
     )
   }
 
   @Test
-  fun tileTapStopsFromPersistedOnStateEvenWhenSetupIsNoLongerReady() {
+  fun persistedOnCannotTurnAColdTileIntoAStopCommand() {
     assertEquals(
-        TileToggleDecision.Stop,
-        tileToggleDecision(
-            desiredVpnEnabled = true,
-            vpnAuthorized = false,
-            ableToStartVpn = false,
-        ),
+        TileToggleDecision.OpenApp,
+        tileToggleDecision(desiredVpnEnabled = true, vpnAuthorized = false, ableToStartVpn = false),
     )
   }
 
@@ -39,11 +31,7 @@ class TailwareTileLogicTest {
   fun tileTapOpensAppInsteadOfSilentlyIgnoringIncompleteSetup() {
     assertEquals(
         TileToggleDecision.OpenApp,
-        tileToggleDecision(
-            desiredVpnEnabled = false,
-            vpnAuthorized = false,
-            ableToStartVpn = true,
-        ),
+        tileToggleDecision(desiredVpnEnabled = false, vpnAuthorized = false, ableToStartVpn = true),
     )
   }
 
@@ -76,10 +64,10 @@ class TailwareTileLogicTest {
   }
 
   @Test
-  fun compactNetworkLineHonorsVisibilityPreferences() {
+  fun ipAndMagicDnsAreIndependentStructuredRows() {
     assertEquals(
-        "IP 100.64.0.1 • DNS ON",
-        buildTileNetworkDetail(
+        TileNetworkRows(ip = "IP 100.64.0.1", magicDns = "DNS ON"),
+        buildTileNetworkRows(
             selfIp = "100.64.0.1",
             tailscaleDnsEnabled = true,
             magicDnsName = null,
@@ -88,8 +76,8 @@ class TailwareTileLogicTest {
         ),
     )
     assertEquals(
-        "DNS OFF",
-        buildTileNetworkDetail(
+        TileNetworkRows(ip = null, magicDns = "DNS OFF"),
+        buildTileNetworkRows(
             selfIp = "100.64.0.1",
             tailscaleDnsEnabled = false,
             magicDnsName = null,
@@ -97,21 +85,205 @@ class TailwareTileLogicTest {
             showMagicDns = true,
         ),
     )
-    assertNull(
-        buildTileNetworkDetail(
+    assertEquals(
+        TileNetworkRows(ip = null, magicDns = null),
+        buildTileNetworkRows(
             selfIp = "100.64.0.1",
             tailscaleDnsEnabled = true,
             magicDnsName = null,
             showIp = false,
             showMagicDns = false,
+        ),
+    )
+  }
+
+  @Test
+  fun rowVisibilityTogglesDoNotAffectEachOther() {
+    assertEquals("IP 100.64.0.1", buildTileIpRow("100.64.0.1", showIp = true))
+    assertNull(buildTileIpRow("100.64.0.1", showIp = false))
+    assertEquals(
+        "DNS watch",
+        buildTileMagicDnsRow(
+            tailscaleDnsEnabled = true,
+            magicDnsName = "watch.example.ts.net",
+            showMagicDns = true,
+        ),
+    )
+    assertNull(
+        buildTileMagicDnsRow(
+            tailscaleDnsEnabled = true,
+            magicDnsName = "watch.example.ts.net",
+            showMagicDns = false,
         ))
   }
 
   @Test
-  fun exitLineIsAlwaysPresentWhenEnabled() {
+  fun technicalValuesAreCompactedBeforeBidiFormatting() {
+    val wrap: (String) -> String = { value -> "[$value]" }
+    val networkRows =
+        buildTileNetworkRows(
+            selfIp = "2001:db8:1234:5678:9abc:def0:1234:5678",
+            tailscaleDnsEnabled = true,
+            magicDnsName = "wearable-with-a-long-name.example.ts.net",
+            showIp = true,
+            showMagicDns = true,
+            valueFormatter = wrap,
+        )
+    val exitRows =
+        buildTileExitRows(
+            activeExitNodeName = "long-desktop-exit-node",
+            allowLanAccess = true,
+            showExitNode = true,
+            offLabel = "Off",
+            lanLabel = "LAN",
+            onLabel = "On",
+            offStateLabel = "Off",
+            valueFormatter = wrap,
+        )
+
+    val ip = checkNotNull(networkRows.ip)
+    val dns = checkNotNull(networkRows.magicDns)
+    val exitNode = checkNotNull(exitRows.exitNode)
+    assertTrue(ip.startsWith("IP ["))
+    assertTrue(ip.endsWith("]"))
+    assertTrue(dns.startsWith("DNS ["))
+    assertTrue(dns.endsWith("]"))
+    assertFalse(dns.contains("example"))
+    assertTrue(exitNode.startsWith("Exit: ["))
+    assertTrue(exitNode.endsWith("]"))
+  }
+
+  @Test
+  fun setupOrErrorTextTakesPriorityOverStructuredRows() {
+    val networkRows = TileNetworkRows(ip = "IP 100.64.0.1", magicDns = "DNS watch")
     assertEquals(
-        "Exit: Off",
-        buildTileExitDetail(
+        listOf("VPN setup required"),
+        prioritizeTileDetailRows(
+            priorityText = "VPN setup required",
+            networkRows = networkRows,
+            exitRows = TileExitRows(exitNode = "Exit: desktop", lan = "LAN On"),
+            readyText = "Ready",
+        ),
+    )
+    assertEquals(
+        listOf("IP 100.64.0.1", "DNS watch", "Exit: desktop", "LAN On"),
+        prioritizeTileDetailRows(
+            priorityText = null,
+            networkRows = networkRows,
+            exitRows = TileExitRows(exitNode = "Exit: desktop", lan = "LAN On"),
+            readyText = "Ready",
+            maximumNormalRows = 4,
+        ),
+    )
+  }
+
+  @Test
+  fun compactRowsFallBackToReadyAndRespectTheScreenBudget() {
+    assertEquals(
+        listOf("Ready"),
+        prioritizeTileDetailRows(
+            priorityText = null,
+            networkRows = TileNetworkRows(ip = null, magicDns = null),
+            exitRows = TileExitRows(exitNode = null, lan = null),
+            readyText = "Ready",
+        ),
+    )
+    assertEquals(
+        listOf("Exit: desktop", "LAN On"),
+        prioritizeTileDetailRows(
+            priorityText = null,
+            networkRows = TileNetworkRows(ip = "IP 100.64.0.1", magicDns = "DNS watch"),
+            exitRows = TileExitRows(exitNode = "Exit: desktop", lan = "LAN On"),
+            readyText = "Ready",
+            maximumNormalRows = 2,
+        ),
+    )
+  }
+
+  @Test
+  fun activeExitAndLanAreReservedTogetherUnderAThreeRowBudget() {
+    assertEquals(
+        listOf("IP 100.64.0.1", "Exit: very-long-exit", "LAN On"),
+        prioritizeTileDetailRows(
+            priorityText = null,
+            networkRows = TileNetworkRows(ip = "IP 100.64.0.1", magicDns = "DNS watch"),
+            exitRows = TileExitRows(exitNode = "Exit: very-long-exit", lan = "LAN On"),
+            readyText = "Ready",
+            maximumNormalRows = 3,
+        ),
+    )
+    assertEquals(
+        listOf("DNS failed"),
+        prioritizeTileDetailRows(
+            priorityText = "DNS failed",
+            networkRows = TileNetworkRows(ip = "IP 100.64.0.1", magicDns = "DNS watch"),
+            exitRows = TileExitRows(exitNode = "Exit: very-long-exit", lan = "LAN On"),
+            readyText = "Ready",
+            maximumNormalRows = 3,
+        ),
+    )
+  }
+
+  @Test
+  fun tileLayoutShrinksTheRingOn192And200DpScreensWithoutDroppingDetailRows() {
+    listOf(192, 200).forEach { size ->
+      val profile = tileLayoutProfile(size, size)
+      assertEquals(50f, profile.ringSizeDp)
+      assertTrue(profile.buttonSizeDp >= 48f)
+      assertEquals(4, profile.maximumNormalRows)
+    }
+
+    val regular = tileLayoutProfile(220, 220)
+    assertEquals(52f, regular.ringSizeDp)
+    assertTrue(regular.buttonSizeDp >= 48f)
+    assertEquals(4, regular.maximumNormalRows)
+  }
+
+  @Test
+  fun tileLayoutUsesTheSmallestDimensionForRectangularWearDisplays() {
+    assertEquals(50f, tileLayoutProfile(screenWidthDp = 240, screenHeightDp = 200).ringSizeDp)
+    assertEquals(52f, tileLayoutProfile(screenWidthDp = 240, screenHeightDp = 220).ringSizeDp)
+  }
+
+  @Test
+  fun tileContentDescriptionIncludesCurrentStatusAndConcreteNextAction() {
+    assertEquals(
+        "Disconnected — Connect",
+        buildTileContentDescription(
+            statusLabel = "Disconnected",
+            displayedAction = TileToggleDecision.Start,
+            connectLabel = "Connect",
+            disconnectLabel = "Disconnect",
+            openAppLabel = "Open Tailware",
+        ),
+    )
+    assertEquals(
+        "Connected — Disconnect",
+        buildTileContentDescription(
+            statusLabel = "Connected",
+            displayedAction = TileToggleDecision.Stop,
+            connectLabel = "Connect",
+            disconnectLabel = "Disconnect",
+            openAppLabel = "Open Tailware",
+        ),
+    )
+    assertEquals(
+        "Open Tailware",
+        buildTileContentDescription(
+            statusLabel = "Error",
+            displayedAction = TileToggleDecision.OpenApp,
+            connectLabel = "Connect",
+            disconnectLabel = "Disconnect",
+            openAppLabel = "Open Tailware",
+        ),
+    )
+  }
+
+  @Test
+  fun exitAndLanUseIndependentRowsWhenEnabled() {
+    assertEquals(
+        TileExitRows(exitNode = "Exit: Off", lan = null),
+        buildTileExitRows(
             activeExitNodeName = null,
             allowLanAccess = false,
             showExitNode = true,
@@ -122,8 +294,8 @@ class TailwareTileLogicTest {
         ),
     )
     assertEquals(
-        "Exit: desktop • LAN On",
-        buildTileExitDetail(
+        TileExitRows(exitNode = "Exit: desktop", lan = "LAN On"),
+        buildTileExitRows(
             activeExitNodeName = "desktop",
             allowLanAccess = true,
             showExitNode = true,
@@ -133,8 +305,9 @@ class TailwareTileLogicTest {
             offStateLabel = "Off",
         ),
     )
-    assertNull(
-        buildTileExitDetail(
+    assertEquals(
+        TileExitRows(exitNode = null, lan = null),
+        buildTileExitRows(
             activeExitNodeName = "desktop",
             allowLanAccess = false,
             showExitNode = false,
@@ -142,7 +315,8 @@ class TailwareTileLogicTest {
             lanLabel = "LAN",
             onLabel = "On",
             offStateLabel = "Off",
-        ))
+        ),
+    )
   }
 
   @Test
@@ -186,9 +360,9 @@ class TailwareTileLogicTest {
   }
 
   @Test
-  fun displayedConnectingStateAlwaysMapsToStop() {
+  fun displayedConnectingStateStillOpensThePassiveApp() {
     assertEquals(
-        TileToggleDecision.Stop,
+        TileToggleDecision.OpenApp,
         displayedTileAction(
             alwaysOpenApp = false,
             visualStatus = TileVisualStatus.Connecting,
@@ -201,11 +375,9 @@ class TailwareTileLogicTest {
   fun magicDnsNameIsShownWhenAvailable() {
     assertEquals(
         "DNS watch",
-        buildTileNetworkDetail(
-            selfIp = null,
+        buildTileMagicDnsRow(
             tailscaleDnsEnabled = true,
             magicDnsName = "watch.example.ts.net",
-            showIp = false,
             showMagicDns = true,
         ),
     )
@@ -215,19 +387,17 @@ class TailwareTileLogicTest {
   fun compactDetailsUseLocalizedStateLabels() {
     assertEquals(
         "DNS AAN",
-        buildTileNetworkDetail(
-            selfIp = null,
+        buildTileMagicDnsRow(
             tailscaleDnsEnabled = true,
             magicDnsName = null,
-            showIp = false,
             showMagicDns = true,
             onLabel = "AAN",
             offLabel = "UIT",
         ),
     )
     assertEquals(
-        "Sortie: bureau-princi… • LAN Activé",
-        buildTileExitDetail(
+        TileExitRows(exitNode = "Sortie: bureau-princi…", lan = "LAN Activé"),
+        buildTileExitRows(
             activeExitNodeName = "bureau-principal-paris",
             allowLanAccess = true,
             showExitNode = true,
@@ -241,9 +411,25 @@ class TailwareTileLogicTest {
   }
 
   @Test
+  fun humanOffStatusIsDisconnectedWhilePowerActionOpensTheApp() {
+    assertEquals(TileHumanStatus.Disconnected, resolveTileHumanStatus(TileVisualStatus.Off))
+    assertEquals(
+        TileToggleDecision.OpenApp,
+        displayedTileAction(
+            alwaysOpenApp = false,
+            visualStatus = TileVisualStatus.Off,
+            tunnelStatus = TileTunnelStatus.Disconnected,
+        ),
+    )
+    TileVisualStatus.values().forEach { status ->
+      assertEquals(TileButtonContent.PowerIcon, resolveTileButtonContent(status))
+    }
+  }
+
+  @Test
   fun coldTileFallsBackToOpeningAppAndCacheResetPreservesDisplayedAction() {
     assertEquals(TileToggleDecision.OpenApp, displayedActionFromStored(null))
-    assertEquals(TileToggleDecision.Start, displayedActionFromStored("Start"))
+    assertEquals(TileToggleDecision.OpenApp, displayedActionFromStored("Start"))
     assertEquals(TileToggleDecision.OpenApp, displayedActionFromStored("unexpected"))
     assertTrue(shouldClearTileCacheKey("tile_cached_self_ip"))
     assertFalse(shouldClearTileCacheKey("tile_displayed_action_7"))

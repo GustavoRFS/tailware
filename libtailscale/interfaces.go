@@ -21,6 +21,18 @@ type AppContext interface {
 	// Log logs the given tag and logLine
 	Log(tag, logLine string)
 
+	// OnNativeBackendStartupError reports that a complete native backend
+	// startup attempt failed. This callback is independent from IPNService
+	// ownership, so Android can surface the failure even when no VPN start
+	// command exists yet.
+	OnNativeBackendStartupError(attemptID int64)
+
+	// OnNativeBackendRecovered reports that a clean replacement attempt became
+	// ready after an earlier startup failure. Android uses this to clear the
+	// global error and replace notification subscriptions that ended with the
+	// failed attempt.
+	OnNativeBackendRecovered(attemptID int64)
+
 	// EncryptToPref stores the given value to an encrypted preference at the
 	// given key.
 	EncryptToPref(key, value string) error
@@ -99,6 +111,11 @@ type IPNService interface {
 	// overwrite or disconnect a newer user command.
 	CommandGeneration() int64
 
+	// IsCommandAuthorized reports whether commandGeneration still owns a live,
+	// process-local Connect capability. Persisted desired state alone is never
+	// sufficient authorization for native networking or TUN work.
+	IsCommandAuthorized(commandGeneration int64) bool
+
 	// HandleVpnServiceError atomically claims an error for commandGeneration
 	// on Android. It returns true only when that exact generation still owns
 	// the desired state and Android has accepted responsibility for reconciling
@@ -112,6 +129,10 @@ type IPNService interface {
 	// socket was successfully protected.
 	Protect(fd int32) bool
 
+	// BindSocketToNetwork binds a native socket only while this service's exact
+	// command generation still owns the process-local Connect capability.
+	BindSocketToNetwork(fd int32) bool
+
 	// NewBuilder creates a new VPNServiceBuilder in preparation for starting
 	// the Android VPN.
 	NewBuilder() VPNServiceBuilder
@@ -120,7 +141,18 @@ type IPNService interface {
 
 	DisconnectVPN()
 
-	UpdateVpnStatus(bool)
+	// UpdateVpnStatus reports the native tunnel state for the exact Android
+	// desired-state generation that caused it. Android must ignore callbacks
+	// from older generations so a late TUN teardown cannot overwrite a newer
+	// user start.
+	UpdateVpnStatus(status bool, commandGeneration int64)
+
+	// NativeVpnTeardownComplete acknowledges that the accepted disconnect for
+	// commandGeneration has brought the native device down, closed every owned
+	// TUN descriptor, and removed the generation's protect/bind hooks. Android
+	// must match it to the exact pending teardown owner; an older acknowledged
+	// teardown may release its barrier but must not overwrite a newer successor.
+	NativeVpnTeardownComplete(commandGeneration int64)
 }
 
 // VPNServiceBuilder corresponds to Android's VpnService.Builder.
@@ -142,14 +174,51 @@ type ParcelFileDescriptor interface {
 // Application encapsulates the running Tailscale Application. There is only a
 // single instance of Application per Android application.
 type Application interface {
-	// CancelInteractiveLogin disconnects the current control client and clears
-	// any pending interactive AuthURL without changing profiles, keys, or
-	// persisted login preferences.
-	CancelInteractiveLogin()
+	// BeginAuthentication starts a fresh native ownership epoch for one login
+	// attempt. Authentication-sensitive notifications carry this value to
+	// Android so a delayed callback cannot be attributed to a replacement
+	// attempt.
+	BeginAuthentication() int64
+
+	// CancelInteractiveLogin invalidates authenticationEpoch, disconnects the
+	// current control client, and waits for callbacks that already captured the
+	// epoch to return. It does nothing and returns false if a newer epoch owns
+	// authentication.
+	CancelInteractiveLogin(authenticationEpoch int64) bool
+
+	// FinishAuthentication invalidates a successfully completed epoch without
+	// disconnecting the current control client.
+	FinishAuthentication(authenticationEpoch int64) bool
+
+	// AuthenticationSequence snapshots the newest explicit or backend-generated
+	// authentication sequence. Zero is the valid baseline before any epoch has
+	// begun. Cancellation and finish retire the active owner without advancing
+	// this sequence.
+	AuthenticationSequence() int64
 
 	// CallLocalAPI provides a mechanism for calling Tailscale's HTTP localapi
 	// without having to call over the network.
 	CallLocalAPI(timeoutMillis int, method, endpoint string, body InputStream) (LocalAPIResponse, error)
+
+	// CallLocalAPIForAuthenticationEpoch executes a LocalAPI handler only while
+	// authenticationEpoch is still the exact newest authentication sequence.
+	// The sequence is fenced for the handler's entire execution. Despite the
+	// parameter name, zero is a valid baseline snapshot for signed-in operations
+	// that begin before any interactive authentication epoch.
+	CallLocalAPIForAuthenticationEpoch(authenticationEpoch int64, timeoutMillis int, method, endpoint string, body InputStream) (LocalAPIResponse, error)
+
+	// AdvanceWantRunningGeneration advances the native cancellation boundary
+	// for WantRunning requests. It is monotonic and non-blocking: advancing it
+	// cancels the prior generation's request context without waiting for its
+	// LocalAPI handler to return.
+	AdvanceWantRunningGeneration(commandGeneration int64) bool
+
+	// CallLocalAPIForWantRunningGeneration executes a LocalAPI request under the
+	// exact WantRunning generation and, unless authenticationSequence is -1,
+	// the exact authentication sequence. Sequence zero is the valid baseline;
+	// values below -1 are invalid. Neither ownership registry is locked while
+	// ServeHTTP executes, and either boundary cancels the request context.
+	CallLocalAPIForWantRunningGeneration(commandGeneration, authenticationSequence int64, timeoutMillis int, method, endpoint string, body InputStream) (LocalAPIResponse, error)
 
 	// CallLocalAPIMultipart is like CallLocalAPI, but instead of a single body,
 	// it accepts multiple FileParts that get encoded as multipart/form-data.
@@ -163,10 +232,10 @@ type Application interface {
 	// Tailscale's logging backend. Changes take effect immediately.
 	SetClientLoggingEnabled(enabled bool)
 
-	// WatchNotifications provides a mechanism for subscribing to ipn.Notify
-	// updates. The given NotificationCallback's OnNotify function is invoked
-	// on every new ipn.Notify message. The returned NotificationManager
-	// allows the watcher to stop watching notifications.
+	// WatchNotifications provides a logical subscription to ipn.Notify updates.
+	// Its physical native watcher is transparently rotated at authentication
+	// boundaries so a queued callback can never acquire a replacement epoch.
+	// The returned NotificationManager stops the logical subscription.
 	WatchNotifications(mask int, cb NotificationCallback) NotificationManager
 }
 
@@ -254,11 +323,37 @@ type ShareFileHelper interface {
 // of various state changes.
 
 func RequestVPN(service IPNService, commandGeneration int64) {
-	onVPNRequested <- vpnServiceCommand{service: service, generation: commandGeneration}
+	submitVPNCommand(vpnServiceCommand{
+		service:    service,
+		generation: commandGeneration,
+		kind:       vpnServiceCommandStart,
+	})
 }
 
 func ServiceDisconnect(service IPNService, commandGeneration int64) {
-	onDisconnect <- vpnServiceCommand{service: service, generation: commandGeneration}
+	// Accept and publish the exact OFF barrier synchronously. Descriptor closure
+	// remains asynchronous, so this JNI call is short, but a newer Connect can no
+	// longer overtake a queued disconnect before native ownership is fenced.
+	teardown, created, accepted := beginVPNTeardown(service, commandGeneration, nil)
+	if !accepted {
+		return
+	}
+	if teardown == nil {
+		reportNativeVPNTeardownComplete(service, commandGeneration)
+		return
+	}
+	if created {
+		go completeVPNTeardown(teardown)
+	}
+}
+
+// ForceVPNTeardown installs an exact-generation fail-closed barrier and
+// schedules native teardown without waiting on the backend command loop. It
+// returns true when the request was accepted, was already in flight, or had
+// already completed for this exact service/generation. Completion is reported
+// through IPNService.NativeVpnTeardownComplete.
+func ForceVPNTeardown(service IPNService, commandGeneration int64) bool {
+	return forceVPNTeardown(service, commandGeneration)
 }
 
 func SendLog(logstr []byte) {

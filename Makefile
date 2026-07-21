@@ -31,6 +31,9 @@ GOMOBILE_BUILD_TAGS := ts_omit_cachenetmap
 DEBUG_APK := tailware-debug.apk
 RELEASE_AAB := tailware-release.aab
 JKS_ALIAS ?= tailware
+ADB ?= adb
+ADB_SERIAL ?=
+TAILWARE_VERSION_NAME := $(shell sed -n 's/^[[:space:]]*versionName "\([^"]*\)".*/\1/p' android/build.gradle | head -n 1)
 
 # Define output filenames.
 LIBTAILSCALE_AAR := android/libs/libtailscale.aar
@@ -273,11 +276,14 @@ androidpath:
 	@echo 'export PATH=$(ANDROID_HOME)/cmdline-tools/latest/bin:$(ANDROID_HOME)/platform-tools:$$PATH'
 
 .PHONY: tag_release
-tag_release: tailscale.version bump-version-code ## Tag the current commit with the current version
-	@if ! git diff --quiet -- android/build.gradle; then \
-		source tailscale.version && git commit -sm "android: bump versionCode for $${VERSION_LONG}" android/build.gradle; \
+tag_release: ## Tag the clean current commit with Tailware's app version
+	@test -n "$(TAILWARE_VERSION_NAME)" || (echo "Could not read Tailware versionName from android/build.gradle"; exit 1)
+	@test -z "$$(git status --porcelain)" || (echo "Refusing to tag a dirty worktree"; exit 1)
+	@if git rev-parse -q --verify "refs/tags/v$(TAILWARE_VERSION_NAME)" >/dev/null; then \
+		echo "Tag v$(TAILWARE_VERSION_NAME) already exists"; \
+		exit 1; \
 	fi
-	source tailscale.version && git tag -a "$${VERSION_LONG}" -m "Version updated to $${VERSION_LONG}"
+	git tag -a "v$(TAILWARE_VERSION_NAME)" -m "Tailware $(TAILWARE_VERSION_NAME)"
 
 .PHONY: bumposs ## Bump to the latest oss and update the versions.
 bumposs: update-oss tailscale.version bump-version-code
@@ -285,7 +291,7 @@ bumposs: update-oss tailscale.version bump-version-code
 	source tailscale.version && git tag -a "$${VERSION_LONG}" -m "OSS and Version updated to $${VERSION_LONG}"
 
 # Recomputes the base versionCode from tailscale.version and rewrites the
-# `versionCode <n>` line in android/build.gradled
+# `versionCode <n>` line in android/build.gradle
 .PHONY: bump-version-code
 bump-version-code: tailscale.version
 	@source tailscale.version && \
@@ -329,9 +335,12 @@ checkandroidsdk: ## Check that Android SDK is installed
 		\tANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT)\n\n\
 		See README.md for instructions on how to install the prerequisites.\n"; exit 1)
 
-.PHONY: go-test                                                                                                                                                                                                 
-  go-test: ## Run the Go tests (excludes packages requiring Android NDK)                                                                                                                                                                                     
-	./tool/go test $$(./tool/go list ./... | grep -v '^github.com/tailscale/tailscale-android/libtailscale$$')    
+.PHONY: go-test
+go-test: ## Run the Go tests (excludes packages requiring Android NDK)
+	./tool/go test $$(./tool/go list ./... | grep -v '^github.com/tailscale/tailscale-android/libtailscale$$')
+	./tool/go test ./libtailscale/multitun.go \
+		./libtailscale/multitun_filetest_support.go \
+		./libtailscale/multitun_test.go
 
 .PHONY: test
 test: gradle-dependencies ## Run the Android tests
@@ -344,6 +353,10 @@ fmt: gradle-dependencies ## Format the Android code
 .PHONY: fmt-check
 fmt-check: gradle-dependencies ## Check the Android code is formatted
 	(cd android && ./gradlew ktfmtCheck)
+
+.PHONY: lint
+lint: gradle-dependencies ## Run Android lint with warnings treated as errors
+	(cd android && ./gradlew lintDebug)
 
 .PHONY: emulator
 emulator: ## Start an android emulator instance
@@ -360,13 +373,22 @@ emulator: ## Start an android emulator instance
 	@echo "Starting emulator..."
 	@$(ANDROID_HOME)/emulator/emulator -avd "$(AVD)" -logcat-output /dev/stdout -netdelay none -netspeed full
 
+.PHONY: check-watch-adb
+check-watch-adb: ## Require an explicit connected Wear OS target
+	@test -n "$(ADB_SERIAL)" || (echo "Set ADB_SERIAL to the exact watch serial from 'adb devices -l'"; exit 1)
+	@$(ADB) -s "$(ADB_SERIAL)" get-state | grep -qx "device" || \
+		(echo "ADB_SERIAL is not a connected adb device: $(ADB_SERIAL)"; exit 1)
+	@$(ADB) -s "$(ADB_SERIAL)" shell pm list features | tr -d '\r' | \
+		grep -qx "feature:android.hardware.type.watch" || \
+		(echo "Refusing non-Wear target: $(ADB_SERIAL)"; exit 1)
+
 .PHONY: install
-install: $(DEBUG_APK) ## Install the debug APK on a connected device
-	adb install -r $<
+install: $(DEBUG_APK) check-watch-adb ## Install the debug APK on an explicitly selected watch
+	$(ADB) -s "$(ADB_SERIAL)" install -r $<
 
 .PHONY: run
 run: install ## Run the debug APK on a connected device
-	adb shell am start -n io.github.vladbezm.tailware/com.tailscale.ipn.wear.WearMainActivity
+	$(ADB) -s "$(ADB_SERIAL)" shell am start -n io.github.vladbezm.tailware/com.tailscale.ipn.wear.WearMainActivity
 
 .PHONY: docker-build-image
 docker-build-image: ## Builds the docker image for the android build environment if it does not exist

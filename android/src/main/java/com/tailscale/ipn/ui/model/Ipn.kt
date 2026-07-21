@@ -35,6 +35,8 @@ class Ipn {
   // on which NotifyWatchOpts were set when the Notifier was created.
   @Serializable
   data class Notify(
+      val TailwareAuthEpoch: Long = 0,
+      val TailwareAuthBootstrap: Boolean = false,
       val Version: String? = null,
       val ErrMessage: String? = null,
       val LoginFinished: Empty.Message? = null,

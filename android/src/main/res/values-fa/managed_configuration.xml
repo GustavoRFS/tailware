@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">اجباری کردن کلید اتصال فعال</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">از قطع اتصال Tailscale توسط کاربر جلوگیری می‌کند.</string>
+    <string name="exit_node_id">شناسه گره خروجی</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">سرویس‌گیرنده Tailscale را مجبور می‌کند همیشه از گره خروجی با شناسه مشخص‌شده استفاده کند.</string>
+    <string name="managed_by_organization_name">مدیریت‌شده توسط – نام سازمان</string>
+    <string name="shows_the_given_organization_name_in_the_client">نام سازمان مشخص‌شده را در سرویس‌گیرنده نشان می‌دهد.</string>
+    <string name="managed_by_caption">مدیریت‌شده توسط – عنوان</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">عنوان مشخص‌شده را کنار نام سازمان نشان می‌دهد.</string>
+    <string name="managed_by_url">مدیریت‌شده توسط – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">دکمه‌ای برای باز کردن منابع پشتیبانی کنار نام سازمان نشان می‌دهد.</string>
+    <string name="required_suggested_tailnet">Tailnet الزامی/پیشنهادی</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">خط‌مشی tailnet به سازمان اجازه می‌دهد یک tailnet تعیین کند تا ارائه‌دهنده هویت آن در صفحه ورود استفاده شود. اگر مقدار با required: شروع شود، Tailscale آن ارائه‌دهنده را اجباری می‌کند و روش ورود دیگری را نمی‌پذیرد.</string>
+    <string name="custom_control_server_url">URL سرور کنترل سفارشی</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">در این قسمت URL یک سرور هماهنگی سفارشی، مانند نمونه Headscale، را وارد کنید.</string>
+    <string name="hidden_network_devices">دستگاه‌های شبکه پنهان</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">دسته‌های مشخص‌شده دستگاه‌های شبکه را از فهرست دستگاه‌ها پنهان می‌کند.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">اجازه دسترسی LAN هنگام استفاده از گره خروجی</string>
+    <string name="enable_posture_checking">فعال کردن بررسی وضعیت دستگاه</string>
+    <string name="device_serial_number">شماره سریال دستگاهی که Tailscale را اجرا می‌کند</string>
+    <string name="device_serial_number_descr">به مدیران اجازه می‌دهد شماره سریال دستگاه را با MDM به سرویس‌گیرنده Tailscale ارسال کنند.</string>
+    <string name="use_tailscale_dns_settings">استفاده از تنظیمات DNS در Tailscale</string>
+    <string name="use_tailscale_subnets">استفاده از زیرشبکه‌های Tailscale</string>
+    <string name="allow_incoming_connections">اجازه اتصال‌های ورودی</string>
+    <string name="exit_node_picker_visibility">نمایانی انتخابگر گره خروجی</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">انتخابگر گره خروجی را در نمای اصلی برنامه نشان می‌دهد یا پنهان می‌کند.</string>
+    <string name="manage_tailnet_lock_visibility">نمایانی مدیریت Tailnet Lock</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">رابط پیکربندی Tailnet Lock را نشان می‌دهد یا پنهان می‌کند.</string>
+    <string name="run_as_exit_node_visibility">نمایانی اجرا به‌عنوان گره خروجی</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">رابط اجرای دستگاه Android به‌عنوان گره خروجی را نشان می‌دهد یا پنهان می‌کند.</string>
+    <string name="excluded_packages">بسته‌های مستثنا</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">برنامه‌هایی را تعیین می‌کند که حتی هنگام اجرای Tailscale از مسیرها و DNS در Tailscale مستثنا می‌شوند. همه برنامه‌های دیگر از Tailscale استفاده می‌کنند.</string>
+    <string name="included_packages">بسته‌های شامل‌شده</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">برنامه‌هایی را تعیین می‌کند که هنگام اجرای Tailscale همیشه از مسیرها و DNS در Tailscale استفاده می‌کنند. اگر فهرست خالی نباشد، برنامه‌های دیگر از Tailscale استفاده نمی‌کنند.</string>
+    <string name="auth_key">کلید احراز هویت</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">کلید احراز هویتی را برای ورود تعیین می‌کند.</string>
+    <string name="hostname">نام میزبان</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">نام دستگاهی را برای استفاده به‌جای مقدار خودکار تعیین می‌کند.</string>
+    <string name="onboarding_flow">رد کردن مراحل آغازین</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">صفحه معرفی هنگام نخستین اجرای برنامه را رد می‌کند.</string>
+    <string name="enable_hardware_attestation">فعال کردن گواهی سخت‌افزاری</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">از کلیدهای سخت‌افزاری برای پیوند دادن هویت گره به دستگاه استفاده می‌کند.</string>
+    <string-array name="hidden_network_devices_labels"><item>دستگاه‌های کاربر فعلی</item><item>دستگاه‌های کاربران دیگر</item><item>دستگاه‌های برچسب‌خورده</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>همیشه</item><item>هرگز</item><item>کاربر تصمیم می‌گیرد</item></string-array>
+    <string-array name="show_hide_labels"><item>نمایش</item><item>پنهان کردن</item></string-array>
+</resources>

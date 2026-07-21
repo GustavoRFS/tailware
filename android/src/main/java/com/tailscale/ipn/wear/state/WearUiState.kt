@@ -4,6 +4,7 @@
 package com.tailscale.ipn.wear
 
 import com.tailscale.ipn.ui.model.Ipn
+import java.util.Locale
 
 /**
  * Account state is deliberately independent from VPN authorization and tunnel state. A user can be
@@ -38,16 +39,61 @@ enum class WearTunnelStatus {
   Disconnecting,
 }
 
-enum class TailwareLanguage(val languageTag: String) {
-  English("en"),
-  Dutch("nl"),
-  French("fr"),
-  German("de"),
-  Russian("ru");
+enum class TailwareLanguage(
+    val languageTag: String,
+    val nativeName: String,
+) {
+  English("en", "English"),
+  Arabic("ar", "العربية"),
+  Bengali("bn", "বাংলা"),
+  Czech("cs", "Čeština"),
+  German("de", "Deutsch"),
+  Greek("el", "Ελληνικά"),
+  Spanish("es", "Español"),
+  Persian("fa", "فارسی"),
+  French("fr", "Français"),
+  Hindi("hi", "हिन्दी"),
+  Hungarian("hu", "Magyar"),
+  Indonesian("id", "Bahasa Indonesia"),
+  Italian("it", "Italiano"),
+  Hebrew("he", "עברית"),
+  Japanese("ja", "日本語"),
+  Korean("ko", "한국어"),
+  Dutch("nl", "Nederlands"),
+  Polish("pl", "Polski"),
+  Portuguese("pt", "Português"),
+  Romanian("ro", "Română"),
+  Russian("ru", "Русский"),
+  Swedish("sv", "Svenska"),
+  Thai("th", "ไทย"),
+  Turkish("tr", "Türkçe"),
+  Ukrainian("uk", "Українська"),
+  Urdu("ur", "اردو"),
+  Vietnamese("vi", "Tiếng Việt"),
+  Chinese("zh", "中文");
 
   companion object {
-    fun fromStoredValue(value: String?): TailwareLanguage =
-        entries.firstOrNull { it.name == value } ?: English
+    fun fromSupportedValue(value: String?): TailwareLanguage? {
+      val normalized =
+          when (value?.trim()?.lowercase(Locale.ROOT)) {
+            "in" -> "id"
+            "iw" -> "he"
+            else -> value?.trim()
+          }
+      if (normalized.isNullOrBlank()) return null
+      entries
+          .firstOrNull {
+            it.name.equals(normalized, ignoreCase = true) ||
+                it.languageTag.equals(normalized, ignoreCase = true)
+          }
+          ?.let {
+            return it
+          }
+      val baseLanguage = Locale.forLanguageTag(normalized).language
+      return entries.firstOrNull { it.languageTag == baseLanguage }
+    }
+
+    fun fromStoredValue(value: String?): TailwareLanguage = fromSupportedValue(value) ?: English
   }
 }
 
@@ -150,9 +196,8 @@ enum class WearHealthSeverity {
 data class WearHealthWarning(
     val code: String,
     val severity: WearHealthSeverity,
-    val title: String,
-    val message: String,
     val impactsConnectivity: Boolean,
+    val subjectName: String? = null,
 )
 
 enum class PingStatus {
@@ -162,12 +207,19 @@ enum class PingStatus {
   Failed,
 }
 
+enum class PingFailureCategory {
+  TimedOut,
+  NoDiagnostic,
+  BackendFailure,
+}
+
 data class WearPingResult(
     val peerId: String? = null,
     val peerName: String? = null,
+    val address: String? = null,
     val status: PingStatus = PingStatus.Idle,
     val latencyMillis: Double? = null,
-    val error: String? = null,
+    val failureCategory: PingFailureCategory? = null,
 )
 
 /**
@@ -199,7 +251,7 @@ data class WearUiState(
         com.tailscale.ipn.UnderlyingNetworkStatus.Unknown,
     val healthWarnings: List<WearHealthWarning> = emptyList(),
     val language: TailwareLanguage = TailwareLanguage.English,
-    val optionalNotificationsEnabled: Boolean = true,
+    val optionalNotificationsRequested: Boolean = false,
     val optionalNotificationsBlockedBySystem: Boolean = false,
     val tileQuickAction: TileQuickAction = TileQuickAction.ToggleConnection,
     val tileShowIp: Boolean = true,

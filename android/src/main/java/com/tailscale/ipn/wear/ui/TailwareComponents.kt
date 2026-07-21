@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,8 +32,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
@@ -58,6 +62,8 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.tailscale.ipn.wear.WearTunnelStatus
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun TailwareListScreen(
@@ -79,12 +85,7 @@ fun TailwareListScreen(
         state = listState,
         horizontalAlignment = Alignment.CenterHorizontally,
         contentPadding =
-            PaddingValues(
-                start = sidePadding,
-                end = sidePadding,
-                top = 34.dp,
-                bottom = 28.dp,
-            ),
+            PaddingValues(start = sidePadding, end = sidePadding, top = 34.dp, bottom = 28.dp),
         content = {
           item {
             Text(
@@ -113,6 +114,7 @@ fun TailwareChip(
     @DrawableRes iconRes: Int? = null,
     warning: Boolean = false,
     danger: Boolean = false,
+    secondaryMaxLines: Int = 4,
 ) {
   Chip(
       modifier = modifier.fillMaxWidth(),
@@ -130,7 +132,7 @@ fun TailwareChip(
             {
               Text(
                   text = value,
-                  maxLines = 4,
+                  maxLines = secondaryMaxLines.coerceAtLeast(1),
                   color =
                       if (accent) TailwarePalette.Ink.copy(alpha = 0.72f)
                       else TailwarePalette.Muted,
@@ -204,12 +206,15 @@ fun TailwareInfo(
     modifier: Modifier = Modifier,
     mono: Boolean = false,
     valueColor: Color = TailwarePalette.Ice,
+    announceChanges: Boolean = false,
 ) {
   Column(
       modifier =
           modifier
               .fillMaxWidth()
-              .semantics(mergeDescendants = true) {}
+              .semantics(mergeDescendants = true) {
+                if (announceChanges) liveRegion = LiveRegionMode.Polite
+              }
               .clip(RoundedCornerShape(18.dp))
               .background(TailwarePalette.Deep)
               .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -217,7 +222,7 @@ fun TailwareInfo(
       horizontalAlignment = Alignment.CenterHorizontally,
   ) {
     Text(
-        text = label.uppercase(),
+        text = label,
         color = TailwarePalette.Muted,
         fontSize = 10.sp,
         letterSpacing = 0.7.sp,
@@ -235,9 +240,17 @@ fun TailwareInfo(
 }
 
 @Composable
-fun TailwareErrorChip(message: String, dismissLabel: String, onDismiss: () -> Unit) {
+fun TailwareErrorChip(
+    message: String,
+    dismissLabel: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
   Chip(
-      modifier = Modifier.fillMaxWidth(),
+      modifier =
+          modifier.fillMaxWidth().semantics(mergeDescendants = true) {
+            liveRegion = LiveRegionMode.Polite
+          },
       onClick = onDismiss,
       label = { Text(message, maxLines = 6) },
       secondaryLabel = { Text(dismissLabel, maxLines = 1) },
@@ -329,35 +342,65 @@ fun ConnectionOrb(
           .forEach { point ->
             drawCircle(TailwarePalette.Deep, radius = nodeRadius, center = point)
             drawCircle(
-                accent, radius = nodeRadius, center = point, style = Stroke(width = stroke * 0.5f))
+                accent,
+                radius = nodeRadius,
+                center = point,
+                style = Stroke(width = stroke * 0.5f),
+            )
           }
     }
   }
 }
 
+internal sealed interface QrCodeState {
+  data object Empty : QrCodeState
+
+  data object Loading : QrCodeState
+
+  data class Ready(val bitmap: ImageBitmap) : QrCodeState
+
+  data object Error : QrCodeState
+}
+
+internal fun initialQrCodeState(content: String?): QrCodeState =
+    if (content.isNullOrBlank()) QrCodeState.Empty else QrCodeState.Loading
+
+internal fun completedQrCodeState(bitmap: ImageBitmap?): QrCodeState =
+    bitmap?.let(QrCodeState::Ready) ?: QrCodeState.Error
+
 @Composable
-fun rememberQrCode(content: String?, size: Int = 280): ImageBitmap? =
-    remember(content, size) {
-      content?.let {
-        runCatching {
-              val matrix =
-                  QRCodeWriter()
-                      .encode(
-                          it,
-                          BarcodeFormat.QR_CODE,
-                          size,
-                          size,
-                          mapOf(EncodeHintType.MARGIN to 2),
-                      )
-              createBitmap(size, size).also { bitmap ->
-                for (x in 0 until size) {
-                  for (y in 0 until size) {
-                    bitmap[x, y] = if (matrix[x, y]) AndroidColor.BLACK else AndroidColor.WHITE
+internal fun rememberQrCode(content: String?, size: Int = 280, retryKey: Int = 0): QrCodeState {
+  // Keying the state itself clears a previous bitmap synchronously during recomposition. Merely
+  // keying a producer coroutine would leave the old QR visible for one frame while the new bitmap
+  // is generated on a worker thread.
+  val state = remember(content, size, retryKey) { mutableStateOf(initialQrCodeState(content)) }
+  LaunchedEffect(content, size, retryKey) {
+    val nonBlankContent = content?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
+    state.value =
+        withContext(Dispatchers.Default) {
+          completedQrCodeState(
+              runCatching {
+                    val matrix =
+                        QRCodeWriter()
+                            .encode(
+                                nonBlankContent,
+                                BarcodeFormat.QR_CODE,
+                                size,
+                                size,
+                                mapOf(EncodeHintType.MARGIN to 2),
+                            )
+                    createBitmap(size, size).also { bitmap ->
+                      for (x in 0 until size) {
+                        for (y in 0 until size) {
+                          bitmap[x, y] =
+                              if (matrix[x, y]) AndroidColor.BLACK else AndroidColor.WHITE
+                        }
+                      }
+                    }
                   }
-                }
-              }
-            }
-            .getOrNull()
-            ?.asImageBitmap()
-      }
-    }
+                  .getOrNull()
+                  ?.asImageBitmap())
+        }
+  }
+  return state.value
+}

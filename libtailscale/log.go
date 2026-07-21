@@ -34,13 +34,19 @@ var logTag = C.CString(ID)
 func initLogging(appCtx AppContext) {
 	// Android's logcat already includes timestamps.
 	log.SetFlags(log.Flags() &^ log.LstdFlags)
-	log.SetOutput(&androidLogWriter{
-		appCtx: appCtx,
-	})
+	restoreAndroidLogOutput(appCtx)
 
 	// Redirect stdout and stderr to the Android logger.
 	logFd(os.Stdout.Fd())
 	logFd(os.Stderr.Fd())
+}
+
+// restoreAndroidLogOutput returns the package logger to its process-lifetime
+// Android sink after a per-backend logtail logger has been shut down. It does
+// not duplicate stdout/stderr file descriptors, so controlled backend retries
+// do not leak pipes.
+func restoreAndroidLogOutput(appCtx AppContext) {
+	log.SetOutput(&androidLogWriter{appCtx: appCtx})
 }
 
 type androidLogWriter struct {

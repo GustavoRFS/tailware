@@ -5,32 +5,14 @@ package libtailscale
 
 import (
 	"io"
-	"log"
+
+	"github.com/tailscale/tailscale-android/libtailscale/internal/inputstream"
 )
 
 // adaptInputStream wraps an [InputStream] into an [io.ReadCloser].
-// It launches a goroutine to stream reads into a pipe.
+// The returned reader owns in and propagates its terminal read and close
+// errors. In particular, Close reaches the Java source and can unblock a
+// concurrent gomobile Read.
 func adaptInputStream(in InputStream) io.ReadCloser {
-	if in == nil {
-		return nil
-	}
-	r, w := io.Pipe()
-	go func() {
-		defer w.Close()
-		for {
-			b, err := in.Read()
-			if err != nil {
-				log.Printf("error reading from inputstream: %v", err)
-				return
-			}
-			if b == nil {
-				return
-			}
-			if _, err := w.Write(b); err != nil {
-				log.Printf("error writing to pipe: %v", err)
-				return
-			}
-		}
-	}()
-	return r
+	return inputstream.New(in)
 }

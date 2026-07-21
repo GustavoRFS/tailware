@@ -17,7 +17,10 @@ import com.tailscale.ipn.ui.util.set
 import com.tailscale.ipn.util.TSLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -26,6 +29,128 @@ import kotlinx.serialization.json.decodeFromStream
 
 // When set to true, the Notifier will inject fake health warnings for testing purposes
 val INJECT_FAKE_HEALTH_WARNINGS = false
+
+data class AuthenticationEvent(
+    val sequence: Long,
+    val epoch: Long,
+    val browseToURL: String? = null,
+    val loginFinished: Boolean = false,
+    val errMessage: String? = null,
+    val state: Ipn.State? = null,
+    val hasIdentityMutation: Boolean = false,
+    val bootstrap: Boolean = false,
+)
+
+internal class LatestNotifierWatchCoordinator {
+  private var generation = 0L
+
+  @Synchronized fun replace(): Long = ++generation
+
+  @Synchronized fun isCurrent(candidate: Long): Boolean = candidate == generation
+
+  @Synchronized
+  fun runIfCurrent(candidate: Long, action: () -> Unit): Boolean {
+    if (candidate != generation) return false
+    action()
+    return true
+  }
+}
+
+internal class AuthenticationEpochCoordinator {
+  var newestEpoch: Long = 0L
+    private set
+
+  var retiredEpoch: Long = 0L
+    private set
+
+  var lastEvent: AuthenticationEvent? = null
+    private set
+
+  private var adoptedEpoch: Long = 0L
+  private val automaticRetirements = mutableSetOf<Long>()
+
+  fun reset() {
+    newestEpoch = 0L
+    retiredEpoch = 0L
+    lastEvent = null
+    adoptedEpoch = 0L
+    automaticRetirements.clear()
+  }
+
+  fun clearEvent() {
+    lastEvent = null
+  }
+
+  /** Returns whether a Notify may mutate any shared Android notifier state. */
+  fun acceptNotification(epoch: Long): Boolean {
+    if (epoch == 0L) {
+      // During an authentication epoch, current native callbacks are stamped with that epoch. A
+      // zero belongs to a callback that entered before the boundary and must not overwrite the
+      // replacement watcher's state after a bounded native callback fence expired.
+      return newestEpoch <= retiredEpoch
+    }
+    if (epoch <= retiredEpoch || epoch < newestEpoch) return false
+    if (epoch > newestEpoch) newestEpoch = epoch
+    return true
+  }
+
+  /** Returns true when registration invalidated an older replay event. */
+  fun register(epoch: Long): Boolean {
+    if (epoch <= 0L ||
+        epoch <= retiredEpoch ||
+        epoch < newestEpoch ||
+        epoch in automaticRetirements) {
+      return false
+    }
+    if (epoch > newestEpoch) newestEpoch = epoch
+    adoptedEpoch = epoch
+    if (lastEvent?.epoch == epoch) return false
+    lastEvent = null
+    return true
+  }
+
+  fun record(event: AuthenticationEvent) {
+    lastEvent = event
+  }
+
+  /** Returns true when retiring this epoch cleared its replay event. */
+  fun retire(epoch: Long): Boolean {
+    automaticRetirements.remove(epoch)
+    retiredEpoch = maxOf(retiredEpoch, epoch)
+    if (adoptedEpoch == epoch) adoptedEpoch = 0L
+    if (lastEvent?.epoch != epoch) return false
+    lastEvent = null
+    return true
+  }
+
+  fun isAdopted(epoch: Long): Boolean = adoptedEpoch == epoch
+
+  fun hasNewerEpoch(epoch: Long): Boolean = newestEpoch > epoch
+
+  /** Claims an epoch that has no existing Android owner. */
+  fun claimUnadopted(epoch: Long): Boolean {
+    if (isAdopted(epoch)) return false
+    register(epoch)
+    return isAdopted(epoch)
+  }
+
+  fun beginAutomaticRetirement(epoch: Long): Boolean {
+    if (epoch <= retiredEpoch || epoch != newestEpoch || isAdopted(epoch)) return false
+    return automaticRetirements.add(epoch)
+  }
+
+  /** Returns true when a successful native retirement cleared the replay event. */
+  fun completeAutomaticRetirement(epoch: Long, nativeRetired: Boolean): Boolean {
+    if (!automaticRetirements.remove(epoch) || !nativeRetired) return false
+    return retire(epoch)
+  }
+}
+
+internal fun shouldAutomaticallyRetireAuthentication(event: AuthenticationEvent): Boolean =
+    !event.bootstrap &&
+        (event.loginFinished ||
+            event.errMessage != null ||
+            (event.state != null && event.state > Ipn.State.NeedsMachineAuth))
 
 // Notifier is a wrapper around the IPN Bus notifier.  It provides a way to watch
 // for changes in various parts of the Tailscale engine.  You will typically only use
@@ -50,6 +175,13 @@ object Notifier {
   val browseToURL: StateFlow<String?> = MutableStateFlow(null)
   val loginFinished: StateFlow<String?> = MutableStateFlow(null)
   val errMessage: StateFlow<String?> = MutableStateFlow(null)
+  private val _authenticationEvent =
+      MutableSharedFlow<AuthenticationEvent?>(
+          replay = 1,
+          extraBufferCapacity = 32,
+          onBufferOverflow = BufferOverflow.DROP_OLDEST,
+      )
+  val authenticationEvent: SharedFlow<AuthenticationEvent?> = _authenticationEvent
   val version: StateFlow<String?> = MutableStateFlow(null)
   val health: StateFlow<Health.State?> = MutableStateFlow(null)
 
@@ -62,11 +194,20 @@ object Notifier {
 
   private lateinit var app: libtailscale.Application
   private var manager: libtailscale.NotificationManager? = null
+  private var notificationScope: CoroutineScope? = null
+  private val watchCoordinator = LatestNotifierWatchCoordinator()
+  private val authenticationEpochs = AuthenticationEpochCoordinator()
+  private var authenticationEventSequence = 0L
 
   @Synchronized
   @JvmStatic
   fun setApp(newApp: libtailscale.Application) {
+    watchCoordinator.replace()
+    manager?.stop()
+    manager = null
     app = newApp
+    authenticationEpochs.reset()
+    _authenticationEvent.tryEmit(null)
   }
 
   @Synchronized
@@ -76,7 +217,12 @@ object Notifier {
     if (!::app.isInitialized) {
       App.get()
     }
+    val generation = watchCoordinator.replace()
+    notificationScope = scope
+    manager?.stop()
+    manager = null
     resetPublishedState()
+    val watchedApp = app
     scope.launch(Dispatchers.IO) {
       val mask =
           NotifyWatchOpt.Prefs.value or
@@ -85,63 +231,82 @@ object Notifier {
               NotifyWatchOpt.NoNetmap.value or
               NotifyWatchOpt.InitialStatus.value or
               NotifyWatchOpt.InitialHealthState.value
-      manager =
-          app.watchNotifications(mask.toLong()) { notification ->
+      val candidate =
+          watchedApp.watchNotifications(mask.toLong()) { notification ->
             runCatching {
                   val notify = decoder.decodeFromStream<Notify>(notification.inputStream())
-                  notify.State?.let { state.set(Ipn.State.fromInt(it)) }
-                  if (BuildConfig.DEBUG) {
-                    notify.InitialStatus?.let {
-                      TSLog.d(
-                          TAG,
-                          "received initial status: peers=${it.Peer?.size ?: 0}, users=${it.User?.size ?: 0}")
-                    }
-                    val peersChanged = notify.PeersChanged?.size ?: 0
-                    val peersRemoved = notify.PeersRemoved?.size ?: 0
-                    val users = notify.UserProfiles?.size ?: 0
-                    if (notify.SelfChange != null ||
-                        peersChanged > 0 ||
-                        peersRemoved > 0 ||
-                        users > 0) {
-                      TSLog.d(
-                          TAG,
-                          "received bus update: self=${notify.SelfChange != null}, peersChanged=$peersChanged, peersRemoved=$peersRemoved, users=$users")
-                    }
-                  }
-                  val signedOutBoundary =
-                      notify.Prefs?.LoggedOut == true || notify.State == Ipn.State.NeedsLogin.value
-                  if (signedOutBoundary) {
-                    clearIdentityAndStatus()
-                  } else {
-                    updateNetworkMap(notify)
-                  }
-                  if (!signedOutBoundary) {
-                    notify.Prefs?.let(prefs::set)
-                  }
-                  notify.Engine?.let(engineStatus::set)
-                  notify.TailFSShares?.let(tailFSShares::set)
-                  notify.BrowseToURL?.let(browseToURL::set)
-                  notify.LoginFinished?.let { loginFinished.set(it.property) }
-                  notify.ErrMessage?.let(errMessage::set)
-                  notify.Version?.let(version::set)
-                  notify.OutgoingFiles?.let(outgoingFiles::set)
-                  notify.FilesWaiting?.let(filesWaiting::set)
-                  notify.IncomingFiles?.let(incomingFiles::set)
-                  notify.Health?.let {
-                    if (INJECT_FAKE_HEALTH_WARNINGS) {
-                      injectFakeHealthState()
-                    } else {
-                      health.set(it)
+                  synchronized(this@Notifier) {
+                    watchCoordinator.runIfCurrent(generation) {
+                      if (!authenticationEpochs.acceptNotification(notify.TailwareAuthEpoch)) {
+                        return@runIfCurrent
+                      }
+                      notify.State?.let { state.set(Ipn.State.fromInt(it)) }
+                      if (BuildConfig.DEBUG) {
+                        notify.InitialStatus?.let {
+                          TSLog.d(
+                              TAG,
+                              "received initial status: peers=${it.Peer?.size ?: 0}, users=${it.User?.size ?: 0}")
+                        }
+                        val peersChanged = notify.PeersChanged?.size ?: 0
+                        val peersRemoved = notify.PeersRemoved?.size ?: 0
+                        val users = notify.UserProfiles?.size ?: 0
+                        if (notify.SelfChange != null ||
+                            peersChanged > 0 ||
+                            peersRemoved > 0 ||
+                            users > 0) {
+                          TSLog.d(
+                              TAG,
+                              "received bus update: self=${notify.SelfChange != null}, peersChanged=$peersChanged, peersRemoved=$peersRemoved, users=$users")
+                        }
+                      }
+                      val signedOutBoundary =
+                          notify.Prefs?.LoggedOut == true ||
+                              notify.State == Ipn.State.NeedsLogin.value
+                      if (signedOutBoundary) {
+                        clearIdentityAndStatus()
+                      } else {
+                        updateNetworkMap(notify)
+                      }
+                      if (!signedOutBoundary) {
+                        notify.Prefs?.let(prefs::set)
+                      }
+                      notify.Engine?.let(engineStatus::set)
+                      notify.TailFSShares?.let(tailFSShares::set)
+                      notify.BrowseToURL?.let(browseToURL::set)
+                      notify.LoginFinished?.let { loginFinished.set(it.property) }
+                      notify.ErrMessage?.let(errMessage::set)
+                      notify.Version?.let(version::set)
+                      notify.OutgoingFiles?.let(outgoingFiles::set)
+                      notify.FilesWaiting?.let(filesWaiting::set)
+                      notify.IncomingFiles?.let(incomingFiles::set)
+                      notify.Health?.let {
+                        if (INJECT_FAKE_HEALTH_WARNINGS) {
+                          injectFakeHealthState()
+                        } else {
+                          health.set(it)
+                        }
+                      }
+                      publishAuthenticationEvent(notify)
                     }
                   }
                 }
                 .onFailure { TSLog.e(TAG, "failed to process IPN notification", it) }
           }
+      synchronized(this@Notifier) {
+        if (watchCoordinator.isCurrent(generation)) {
+          manager = candidate
+        } else {
+          candidate.stop()
+        }
+      }
     }
   }
 
+  @Synchronized
   fun stop() {
     TSLog.d(TAG, "Stopping Notifier")
+    watchCoordinator.replace()
+    notificationScope = null
     manager?.let {
       it.stop()
       manager = null
@@ -169,6 +334,82 @@ object Notifier {
   }
 
   @Synchronized
+  fun beginAuthentication(application: libtailscale.Application = app): Long {
+    // Hold the same monitor used by notification publication across the native watcher boundary.
+    // A callback that outlives the bounded native fence cannot mutate Kotlin state until the new
+    // epoch is registered below.
+    val epoch = application.beginAuthentication()
+    registerAuthenticationEpoch(epoch)
+    return epoch
+  }
+
+  /**
+   * Begins and publishes Android ownership under the notification/epoch monitor as one boundary. A
+   * backend or second Android begin therefore cannot overtake the caller between native
+   * registration and its owner field becoming visible.
+   */
+  @Synchronized
+  fun beginAuthenticationWithOwner(
+      application: libtailscale.Application = app,
+      publishOwner: (Long) -> Boolean,
+  ): Long? {
+    val epoch = application.beginAuthentication()
+    registerAuthenticationEpoch(epoch)
+    if (epoch == 0L) return 0L
+    val accepted =
+        try {
+          publishOwner(epoch)
+        } catch (error: Throwable) {
+          if (application.finishAuthentication(epoch)) clearAuthenticationEvent(epoch)
+          throw error
+        }
+    if (accepted) return epoch
+    if (application.finishAuthentication(epoch)) clearAuthenticationEvent(epoch)
+    return null
+  }
+
+  @Synchronized
+  fun finishAuthentication(
+      epoch: Long,
+      application: libtailscale.Application = app,
+  ): Boolean {
+    val finished = application.finishAuthentication(epoch)
+    if (finished) clearAuthenticationEvent(epoch)
+    return finished
+  }
+
+  @Synchronized
+  fun cancelAuthentication(
+      epoch: Long,
+      application: libtailscale.Application = app,
+  ): Boolean {
+    val cancelled = application.cancelInteractiveLogin(epoch)
+    if (cancelled) clearAuthenticationEvent(epoch)
+    return cancelled
+  }
+
+  /**
+   * Claims a native epoch that LocalBackend auto-created for backend-initiated reauthentication.
+   */
+  @Synchronized
+  fun adoptAuthenticationEpoch(epoch: Long): Boolean {
+    return authenticationEpochs.claimUnadopted(epoch)
+  }
+
+  @Synchronized
+  fun runIfNoNewerAuthenticationEpoch(epoch: Long, action: () -> Unit): Boolean {
+    if (authenticationEpochs.hasNewerEpoch(epoch)) return false
+    action()
+    return true
+  }
+
+  @Synchronized
+  fun hasNewerAuthenticationEpoch(epoch: Long): Boolean = authenticationEpochs.hasNewerEpoch(epoch)
+
+  /** Latest epoch already observed by Android; zero is the valid pre-authentication baseline. */
+  @Synchronized fun authenticationMutationSequence(): Long = authenticationEpochs.newestEpoch
+
+  @Synchronized
   private fun clearIdentityAndStatus() {
     userProfiles.clear()
     _netmap.set(null)
@@ -192,6 +433,86 @@ object Notifier {
     outgoingFiles.set(null)
     incomingFiles.set(null)
     filesWaiting.set(null)
+    authenticationEpochs.clearEvent()
+    _authenticationEvent.tryEmit(null)
+  }
+
+  @Synchronized
+  private fun publishAuthenticationEvent(notify: Notify) {
+    val epoch = notify.TailwareAuthEpoch
+    if (epoch == 0L) return
+    val state = notify.State?.let(Ipn.State::fromInt)
+    val hasIdentityMutation =
+        notify.Prefs != null ||
+            notify.SelfChange != null ||
+            notify.InitialStatus != null ||
+            !notify.UserProfiles.isNullOrEmpty()
+    if (notify.BrowseToURL == null &&
+        notify.LoginFinished == null &&
+        notify.ErrMessage == null &&
+        state == null &&
+        !hasIdentityMutation) {
+      return
+    }
+    val event =
+        AuthenticationEvent(
+            sequence = ++authenticationEventSequence,
+            epoch = epoch,
+            browseToURL = notify.BrowseToURL,
+            loginFinished = notify.LoginFinished != null,
+            errMessage = notify.ErrMessage,
+            state = state,
+            hasIdentityMutation = hasIdentityMutation,
+            bootstrap = notify.TailwareAuthBootstrap,
+        )
+    authenticationEpochs.record(event)
+    _authenticationEvent.tryEmit(event)
+    val retirementScope = notificationScope
+    if (retirementScope != null &&
+        shouldAutomaticallyRetireAuthentication(event) &&
+        authenticationEpochs.beginAutomaticRetirement(epoch)) {
+      // Standard Android screens do not maintain TailwareViewModel's richer reauthentication
+      // owner. Retire a backend-auto-created epoch after its terminal event so it cannot remain
+      // active until an unrelated later Begin disconnects control. Registration is blocked while
+      // the native boundary is pending, but callbacks remain accepted until native confirms that
+      // it retired the owner.
+      val nativeApp = app
+      retirementScope.launch(Dispatchers.IO) {
+        val nativeRetired =
+            if (event.errMessage != null) {
+              nativeApp.cancelInteractiveLogin(epoch)
+            } else {
+              nativeApp.finishAuthentication(epoch)
+            }
+        completeAutomaticAuthenticationRetirement(epoch, nativeRetired)
+      }
+    }
+  }
+
+  @Synchronized
+  private fun completeAutomaticAuthenticationRetirement(epoch: Long, nativeRetired: Boolean) {
+    val cleared = authenticationEpochs.completeAutomaticRetirement(epoch, nativeRetired)
+    if (nativeRetired) {
+      if (cleared) _authenticationEvent.tryEmit(null)
+      return
+    }
+    // Native still owns this epoch. Replay only the still-current event so a delayed Android owner
+    // gets another chance to adopt it; a newer epoch must never receive the stale replay.
+    authenticationEpochs.lastEvent
+        ?.takeIf { it.epoch == epoch && authenticationEpochs.newestEpoch == epoch }
+        ?.let(_authenticationEvent::tryEmit)
+  }
+
+  @Synchronized
+  private fun clearAuthenticationEvent(epoch: Long) {
+    if (authenticationEpochs.retire(epoch)) {
+      _authenticationEvent.tryEmit(null)
+    }
+  }
+
+  @Synchronized
+  private fun registerAuthenticationEpoch(epoch: Long) {
+    if (authenticationEpochs.register(epoch)) _authenticationEvent.tryEmit(null)
   }
 
   @Synchronized

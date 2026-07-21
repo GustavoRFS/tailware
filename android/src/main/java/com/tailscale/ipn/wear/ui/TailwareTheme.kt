@@ -4,9 +4,13 @@
 package com.tailscale.ipn.wear.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.wear.compose.material.Colors
 import androidx.wear.compose.material.MaterialTheme
+import com.tailscale.ipn.wear.TailwareLanguage
 
 object TailwarePalette {
   val Ink = Color.Black
@@ -38,6 +42,20 @@ private val TailwareColors =
     )
 
 @Composable
-fun TailwareTheme(content: @Composable () -> Unit) {
-  MaterialTheme(colors = TailwareColors, content = content)
+fun TailwareTheme(
+    language: TailwareLanguage,
+    content: @Composable () -> Unit,
+) {
+  CompositionLocalProvider(
+      LocalLayoutDirection provides tailwareLayoutDirection(language),
+  ) {
+    MaterialTheme(colors = TailwareColors, content = content)
+  }
 }
+
+internal fun tailwareLayoutDirection(language: TailwareLanguage): LayoutDirection =
+    if (language.languageTag in setOf("ar", "fa", "he", "ur")) {
+      LayoutDirection.Rtl
+    } else {
+      LayoutDirection.Ltr
+    }

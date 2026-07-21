@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">强制启用连接开关</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">禁止用户断开 Tailscale。</string>
+    <string name="exit_node_id">出口节点 ID</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">强制 Tailscale 客户端始终使用指定 ID 的出口节点。</string>
+    <string name="managed_by_organization_name">管理方 – 组织名称</string>
+    <string name="shows_the_given_organization_name_in_the_client">在客户端中显示指定的组织名称。</string>
+    <string name="managed_by_caption">管理方 – 说明</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">在组织名称旁显示指定的说明。</string>
+    <string name="managed_by_url">管理方 – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">在组织名称旁显示用于打开支持资源的按钮。</string>
+    <string name="required_suggested_tailnet">必需/建议的 Tailnet</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">tailnet 策略允许组织指定一个 tailnet，并在登录页面使用其身份提供商。如果值以 required: 开头，Tailscale 将强制使用该提供商且不允许其他登录方式。</string>
+    <string name="custom_control_server_url">自定义控制服务器 URL</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">在此指定自定义协调服务器的 URL，例如 Headscale 实例。</string>
+    <string name="hidden_network_devices">隐藏的网络设备</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">从客户端的设备列表中隐藏指定类别的网络设备。</string>
+    <string name="allow_lan_access_when_using_an_exit_node">使用出口节点时允许访问 LAN</string>
+    <string name="enable_posture_checking">启用设备状态检查</string>
+    <string name="device_serial_number">运行 Tailscale 的设备序列号</string>
+    <string name="device_serial_number_descr">允许管理员通过 MDM 将设备序列号传递给 Tailscale 客户端。</string>
+    <string name="use_tailscale_dns_settings">使用 Tailscale DNS 设置</string>
+    <string name="use_tailscale_subnets">使用 Tailscale 子网</string>
+    <string name="allow_incoming_connections">允许传入连接</string>
+    <string name="exit_node_picker_visibility">出口节点选择器可见性</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">在应用主视图中显示或隐藏出口节点选择器。</string>
+    <string name="manage_tailnet_lock_visibility">Tailnet Lock 管理可见性</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">显示或隐藏 Tailnet Lock 配置界面。</string>
+    <string name="run_as_exit_node_visibility">作为出口节点运行的界面可见性</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">显示或隐藏将 Android 设备作为出口节点运行的界面。</string>
+    <string name="excluded_packages">排除的软件包</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">指定即使 Tailscale 正在运行也不使用 Tailscale 路由和 DNS 的应用。其他应用都使用 Tailscale。</string>
+    <string name="included_packages">包含的软件包</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">指定 Tailscale 运行时始终使用 Tailscale 路由和 DNS 的应用。如果列表非空，其他应用不使用 Tailscale。</string>
+    <string name="auth_key">身份验证密钥</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">指定用于登录的身份验证密钥。</string>
+    <string name="hostname">主机名</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">指定用于代替自动默认名称的设备名称。</string>
+    <string name="onboarding_flow">跳过新手引导</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">跳过首次打开应用时显示的介绍页面。</string>
+    <string name="enable_hardware_attestation">启用硬件证明</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">使用硬件保护密钥将节点身份绑定到设备。</string>
+    <string-array name="hidden_network_devices_labels"><item>当前用户的设备</item><item>其他用户的设备</item><item>带标签的设备</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>始终</item><item>从不</item><item>由用户决定</item></string-array>
+    <string-array name="show_hide_labels"><item>显示</item><item>隐藏</item></string-array>
+</resources>

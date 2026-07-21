@@ -5,96 +5,61 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
-    <uses-permission
-        android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
 
-    <!-- Disable input emulation on ChromeOS -->
+    <!-- Tailware is a standalone Wear OS application. -->
     <uses-feature
-        android:name="android.hardware.type.pc"
+        android:name="android.hardware.type.watch"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.wifi"
         android:required="false" />
-
-    <!-- Signal support for Android TV -->
-    <uses-feature
-        android:name="android.software.leanback"
-        android:required="${leanbackRequired}" />
     <uses-feature
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
+    <!--
+      Resource qualifiers retain Android's legacy values-in/values-iw aliases, while localeConfig
+      correctly uses the canonical BCP-47 tags id/he. AGP lint 8.10 does not normalize those alias
+      pairs for UnusedTranslation, so suppress only that false-positive at the application root.
+    -->
     <application
         android:name=".App"
         android:allowBackup="false"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"
-        android:banner="@drawable/tv_banner"
-        android:icon="@mipmap/ic_launcher"
-        android:label="Tailscale"
+        android:icon="@drawable/tailware_mark"
+        android:label="@string/app_name"
+        android:localeConfig="@xml/locales_config"
         android:requestLegacyExternalStorage="true"
-        android:roundIcon="@mipmap/ic_launcher_round"
+        android:roundIcon="@drawable/tailware_mark"
+        android:supportsRtl="true"
         android:enableOnBackInvokedCallback="true"
-        android:theme="@style/Theme.App.SplashScreen">
+        android:theme="@style/Theme.App.SplashScreen"
+        tools:ignore="UnusedTranslation"
+        tools:targetApi="tiramisu">
         <activity
-            android:name="MainActivity"
+            android:name=".wear.WearMainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="true"
-            android:label="@string/app_name"
             android:launchMode="singleTask"
+            android:taskAffinity="io.github.vladbezm.tailware.wear"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
-            </intent-filter>
-        </activity>
-        <activity
-            android:name="ShareActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
-            android:exported="true"
-            android:label="@string/app_name"
-            android:launchMode="singleTask"
-            android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar"
-            android:windowSoftInputMode="adjustResize">
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
-
-                <data android:mimeType="application/*" />
-                <data android:mimeType="audio/*" />
-                <data android:mimeType="image/*" />
-                <data android:mimeType="message/*" />
-                <data android:mimeType="multipart/*" />
-                <data android:mimeType="text/*" />
-                <data android:mimeType="video/*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND_MULTIPLE" />
-                <category android:name="android.intent.category.DEFAULT" />
-
-                <data android:mimeType="application/*" />
-                <data android:mimeType="audio/*" />
-                <data android:mimeType="image/*" />
-                <data android:mimeType="message/*" />
-                <data android:mimeType="multipart/*" />
-                <data android:mimeType="text/*" />
-                <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
 
         <receiver
             android:name="IPNReceiver"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="com.tailscale.ipn.CONNECT_VPN" />
                 <action android:name="com.tailscale.ipn.DISCONNECT_VPN" />
@@ -103,38 +68,110 @@
         </receiver>
 
         <receiver
-            android:name=".MDMSettingsChangedReceiver"
+            android:name=".mdm.MDMSettingsChangedReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.APPLICATION_RESTRICTIONS_CHANGED" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".wear.TailwareBootReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
+        <!--
+          Android classifies an authorized VpnService as system-exempted. The matching permission
+          is declared above; lint cannot infer the runtime VPN authorization/AppOp eligibility.
+        -->
         <service
             android:name=".IPNService"
             android:exported="false"
             android:foregroundServiceType="systemExempted"
-            android:permission="android.permission.BIND_VPN_SERVICE">
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            tools:ignore="ForegroundServicePermission">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
         <service
-            android:name=".QuickToggleService"
+            android:name=".wear.tile.TailwareTileService"
+            android:description="@string/tailware_tile_description"
             android:exported="true"
-            android:icon="@drawable/ic_tile"
-            android:label="@string/tile_name"
-            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            android:icon="@drawable/tailware_mark"
+            android:label="@string/tailware_tile_name"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
             <intent-filter>
-                <action android:name="android.service.quicksettings.action.QS_TILE" />
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
             </intent-filter>
             <meta-data
-                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
-                android:value="true" />
+                android:name="androidx.wear.tiles.PREVIEW"
+                android:resource="@drawable/tailware_tile_preview" />
         </service>
-
+        <meta-data
+            android:name="com.google.android.wearable.standalone"
+            android:value="true" />
         <meta-data
             android:name="android.content.APP_RESTRICTIONS"
             android:resource="@xml/app_restrictions" />
+
+        <!--
+          P0 containment: private.5 may leave WorkManager rows/jobs behind. AndroidX Startup runs
+          providers before App.onCreate, so permitting its WorkManager initializer or scheduler
+          components would allow cold constraint/network tracking before the preference migration
+          and before any current-process activation capability. Tailware no longer schedules
+          background work; compatibility Worker classes remain inert solely for source/ABI
+          continuity.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                tools:node="remove" />
+        </provider>
+        <service
+            android:name="androidx.work.impl.background.systemalarm.SystemAlarmService"
+            tools:node="remove" />
+        <service
+            android:name="androidx.work.impl.background.systemjob.SystemJobService"
+            tools:node="remove" />
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.utils.ForceStopRunnable$BroadcastReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$BatteryChargingProxy"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$BatteryNotLowProxy"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$StorageNotLowProxy"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxy$NetworkStateProxy"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.RescheduleReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.background.systemalarm.ConstraintProxyUpdateReceiver"
+            tools:node="remove" />
+        <receiver
+            android:name="androidx.work.impl.diagnostics.DiagnosticsReceiver"
+            tools:node="remove" />
+        <activity
+            android:name="androidx.compose.ui.tooling.PreviewActivity"
+            android:taskAffinity=""
+            tools:node="remove" />
     </application>
 </manifest>

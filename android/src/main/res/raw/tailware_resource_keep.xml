@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Keep the original private-preview artwork as a migration/reference asset. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/tailware_logo" />

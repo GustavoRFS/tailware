@@ -1,16 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
+<resources
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="MissingTranslation">
 
     <!-- Generic Strings -->
     <string name="log_in">Log in</string>
     <string name="log_out">Log out</string>
     <string name="none">None</string>
-    <string name="connect">Connect</string>
-    <string name="disconnect">Disconnect</string>
     <string name="unknown_user">Unknown user</string>
-    <string name="connected">Connected</string>
-    <string name="using_exit_node">Using exit node (%s)</string>
-    <string name="not_connected">Not connected</string>
     <string name="empty" translatable="false"> </string>
     <string name="template" translatable="false">%s</string>
     <string name="selected">Selected</string> 
@@ -30,8 +27,8 @@
     <string name="cancel">Cancel</string>
 
     <!-- Strings for the about screen -->
-    <string name="app_name" translatable="false">Tailscale</string>
-    <string name="tile_name" translatable="false">Tailscale</string>
+    <string name="app_name" translatable="false">Tailware</string>
+    <string name="tile_name" translatable="false">Tailware</string>
     <string name="version">Version</string>
     <string name="about_view_header">About Tailscale</string>
     <string name="about_view_title">Tailscale for Android</string>
@@ -63,7 +60,6 @@
     <string name="running_exit_node">Running on this device</string>
     <string name="exit_node_offline_mdm_orgname">The exit node selected by %1$s is currently offline. Internet traffic is blocked. Contact a network administrator for help.</string>
     <string name="exit_node_offline_mdm">The exit node selected by your organization is currently offline. Internet traffic is blocked. Contact a network administrator for help.</string>
-    <string name="starting">Starting…</string>
     <string name="connect_to_tailnet_prefix">"Connect again to talk to the other devices in the "</string>
     <string name="connect_to_tailnet_suffix">" tailnet."</string>
     <string name="welcome_to_tailscale">Welcome to Tailscale</string>
@@ -277,28 +273,7 @@
     <string name="scan_to_connect_to_your_tailnet">Scan this QR code to log in to your tailnet</string>
     <string name="enter_code_to_connect_to_tailnet">or enter this code in the Machines > Add device section of the admin console: </string>
 
-    <!-- Strings for intent handling -->
-    <string name="vpn_is_not_ready_to_start">VPN is not ready to start</string>
-    <string name="tailscale_is_not_setup">Tailscale is not setup</string>
-    <string name="no_peers_found">No peers found</string>
-    <string name="no_peers_with_name_found">No peers with name %1$s found</string>
-    <string name="multiple_peers_with_name_found">Multiple peers with name %1$s found</string>
-    <string name="peer_with_name_is_not_an_exit_node">Peer with name %1$s is not an exit node</string>
-    <string name="use_exit_node_intent_failed">Use Exit Node Intent Failed</string>
-
-    <!-- Strings for the IPNReceiver -->
-    <string name="title_connection_failed">Tailscale Connection Failed</string>
-    <string name="body_open_tailscale">Tap here to open Tailscale.</string>
-
     <!-- Strings describing notification channels -->
-    <string name="taildrop_file_transfers">Taildrop file transfers</string>
-    <string name="vpn_status">VPN status</string>
-    <string name="vpn_start">VPN start</string>
-    <string name="notifications_delivered_when_user_interaction_is_required_to_establish_the_vpn_tunnel">Notifications delivered when user interaction is required to establish the VPN tunnel.</string>
-    <string name="optional_notifications_which_display_the_status_of_the_vpn_tunnel">Optional notifications which display the status of the VPN tunnel.</string>
-    <string name="notifications_delivered_when_a_file_is_received_using_taildrop">Notifications delivered when a file is received using Taildrop.</string>
-    <string name="health_channel_name">Errors and warnings</string>
-    <string name="health_channel_description">This notification category is used to deliver important status notifications and should be left enabled. For instance, it is used to notify you about errors or warnings that affect Internet connectivity.</string>
     <string name="copy_ip_address">Copy IP Address</string>
     <string name="ping">Ping</string>
     <string name="relayed_connection">Relayed connection (%1$s)</string>

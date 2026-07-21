@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">Forza il controllo di connessione attivo</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">Impedisce all’utente di disconnettere Tailscale.</string>
+    <string name="exit_node_id">ID nodo di uscita</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">Obbliga il client Tailscale a usare sempre il nodo di uscita con l’ID specificato.</string>
+    <string name="managed_by_organization_name">Gestito da – nome organizzazione</string>
+    <string name="shows_the_given_organization_name_in_the_client">Mostra nel client il nome dell’organizzazione specificato.</string>
+    <string name="managed_by_caption">Gestito da – didascalia</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">Mostra nel client la didascalia specificata accanto al nome dell’organizzazione.</string>
+    <string name="managed_by_url">Gestito da – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">Mostra accanto al nome dell’organizzazione un pulsante per aprire le risorse di supporto.</string>
+    <string name="required_suggested_tailnet">Tailnet obbligatorio/suggerito</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">Il criterio tailnet consente all’organizzazione di specificare un tailnet il cui provider di identità verrà usato nella pagina di accesso. Se il valore inizia con required:, Tailscale impone quel provider e non consente altri metodi di accesso.</string>
+    <string name="custom_control_server_url">URL server di controllo personalizzato</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">Usa questo campo per specificare l’URL di un server di coordinamento personalizzato, ad esempio un’istanza Headscale.</string>
+    <string name="hidden_network_devices">Dispositivi di rete nascosti</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">Nasconde le categorie specificate di dispositivi di rete dall’elenco dispositivi del client.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">Consenti accesso LAN con un nodo di uscita</string>
+    <string name="enable_posture_checking">Attiva controllo postura</string>
+    <string name="device_serial_number">Numero di serie del dispositivo che esegue Tailscale</string>
+    <string name="device_serial_number_descr">Consente agli amministratori di inviare tramite MDM il numero di serie del dispositivo al client Tailscale.</string>
+    <string name="use_tailscale_dns_settings">Usa impostazioni DNS Tailscale</string>
+    <string name="use_tailscale_subnets">Usa sottoreti Tailscale</string>
+    <string name="allow_incoming_connections">Consenti connessioni in entrata</string>
+    <string name="exit_node_picker_visibility">Visibilità selettore nodo di uscita</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">Mostra o nasconde il selettore del nodo di uscita nella schermata principale dell’app.</string>
+    <string name="manage_tailnet_lock_visibility">Visibilità gestione Tailnet Lock</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">Mostra o nasconde l’interfaccia di configurazione di Tailnet Lock.</string>
+    <string name="run_as_exit_node_visibility">Visibilità esecuzione come nodo di uscita</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">Mostra o nasconde l’interfaccia per usare il dispositivo Android come nodo di uscita.</string>
+    <string name="excluded_packages">Pacchetti esclusi</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">Specifica le app escluse dalle route e dal DNS Tailscale anche quando Tailscale è attivo. Tutte le altre app usano Tailscale.</string>
+    <string name="included_packages">Pacchetti inclusi</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">Specifica le app che usano sempre le route e il DNS Tailscale quando Tailscale è attivo. Se l’elenco non è vuoto, tutte le altre app non usano Tailscale.</string>
+    <string name="auth_key">Chiave di autenticazione</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">Definisce una chiave di autenticazione da usare per l’accesso.</string>
+    <string name="hostname">Nome host</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">Specifica un nome dispositivo da usare al posto di quello automatico.</string>
+    <string name="onboarding_flow">Salta la procedura introduttiva</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">Salta la pagina introduttiva mostrata al primo avvio dell’app.</string>
+    <string name="enable_hardware_attestation">Attiva attestazione hardware</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">Usa chiavi protette dall’hardware per associare l’identità del nodo al dispositivo.</string>
+    <string-array name="hidden_network_devices_labels"><item>Dispositivi dell’utente corrente</item><item>Dispositivi di altri utenti</item><item>Dispositivi con tag</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>Sempre</item><item>Mai</item><item>Decide l’utente</item></string-array>
+    <string-array name="show_hide_labels"><item>Mostra</item><item>Nascondi</item></string-array>
+</resources>

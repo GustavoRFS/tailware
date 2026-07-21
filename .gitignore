@@ -38,6 +38,37 @@ tailscale.jks
 # Java profiling output
 *.hprof
 
+# Python tooling caches
+__pycache__/
+*.py[cod]
+
+# Local Codex runs, logs, and transient runner state
+.codex2-runs/
+*.swp
+*.log
+*.pid
+*.tmp
+*.temp
+*.prompt.txt
+*.status.txt
+
+# Android/Gradle generated intermediates and local diagnostics
+.cxx/
+.kotlin/
+captures/
+externalNativeBuild/
+bugreport-*.zip
+bugreport-*.txt
+
+# Local signing material and environment overrides
+*.jks
+*.keystore
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+
 #IDE
 .vscode
 .idea

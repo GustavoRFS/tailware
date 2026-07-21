@@ -4,6 +4,7 @@ package com.tailscale.ipn.util
 
 import android.content.Context
 import android.util.Log
+import com.tailscale.ipn.wear.TailwareActivationCapability
 import libtailscale.Libtailscale
 
 object TSLog {
@@ -16,18 +17,18 @@ object TSLog {
 
   fun d(tag: String?, message: String) {
     Log.d(tag, message)
-    libtailscaleWrapper.sendLog(tag, message)
+    sendNativeLogIfReady(tag, message)
   }
 
   fun w(tag: String, message: String) {
     Log.w(tag, message)
-    libtailscaleWrapper.sendLog(tag, message)
+    sendNativeLogIfReady(tag, message)
   }
 
   fun v(tag: String?, message: String) {
-    if (isUnstableRelease()) {
+    if (::appContext.isInitialized && isUnstableRelease()) {
       Log.v(tag, message)
-      libtailscaleWrapper.sendLog(tag, message)
+      sendNativeLogIfReady(tag, message)
     }
   }
 
@@ -35,16 +36,22 @@ object TSLog {
   @JvmStatic
   fun e(tag: String?, message: String) {
     Log.e(tag, message)
-    libtailscaleWrapper.sendLog(tag, message)
+    sendNativeLogIfReady(tag, message)
   }
 
   fun e(tag: String?, message: String, throwable: Throwable? = null) {
     if (throwable == null) {
       Log.e(tag, message)
-      libtailscaleWrapper.sendLog(tag, message)
+      sendNativeLogIfReady(tag, message)
     } else {
       Log.e(tag, message, throwable)
-      libtailscaleWrapper.sendLog(tag, "$message ${throwable.localizedMessage}")
+      sendNativeLogIfReady(tag, "$message ${throwable.localizedMessage}")
+    }
+  }
+
+  private fun sendNativeLogIfReady(tag: String?, message: String) {
+    if (TailwareActivationCapability.canSendNativeLogs()) {
+      libtailscaleWrapper.sendLog(tag, message)
     }
   }
 
@@ -53,7 +60,7 @@ object TSLog {
         appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName
 
     // Extract the middle number and check if it's odd
-    val middleNumber = versionName.split(".").getOrNull(1)?.toIntOrNull()
+    val middleNumber = versionName.orEmpty().split(".").getOrNull(1)?.toIntOrNull()
     return middleNumber?.let { it % 2 == 1 } ?: false
   }
 

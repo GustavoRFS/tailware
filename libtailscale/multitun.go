@@ -23,15 +23,18 @@ type multiTUN struct {
 	// event is the combined event channel from all active devices.
 	events chan tun.Event
 
-	close    chan struct{}
-	closeErr chan error
+	close     chan struct{}
+	closed    chan struct{}
+	closeOnce sync.Once
+	closeMu   sync.Mutex
+	closeErr  error
+	pumps     sync.WaitGroup
 
-	reads        chan ioRequest
-	writes       chan ioRequest
-	mtus         chan chan mtuReply
-	names        chan chan nameReply
-	shutdowns    chan struct{}
-	shutdownDone chan struct{}
+	reads     chan ioRequest
+	writes    chan ioRequest
+	mtus      chan chan mtuReply
+	names     chan chan nameReply
+	shutdowns chan chan struct{}
 
 	downMu sync.Mutex
 	// downCh is closed when the multiTUN is brought down,
@@ -51,11 +54,21 @@ type multiTUN struct {
 type tunDevice struct {
 	dev tun.Device
 	// close closes the device.
-	close     chan struct{}
-	closeDone chan error
+	close      chan struct{}
+	closeOnce  sync.Once
+	closeDone  chan error
+	finished   chan struct{}
+	errMu      sync.Mutex
+	err        error
+	runStarted bool
 	// readDone is notified when the read goroutine is done.
-	readDone chan struct{}
+	readDone      chan struct{}
+	readFinished  chan struct{}
+	eventFinished chan struct{}
+	readStarted   bool
 }
+
+func (d *tunDevice) stop() { d.closeOnce.Do(func() { close(d.close) }) }
 
 type ioRequest struct {
 	data   [][]byte
@@ -81,17 +94,16 @@ type nameReply struct {
 
 func newTUNDevices() *multiTUN {
 	d := &multiTUN{
-		devices:      make(chan tun.Device),
-		events:       make(chan tun.Event),
-		close:        make(chan struct{}),
-		closeErr:     make(chan error),
-		reads:        make(chan ioRequest),
-		writes:       make(chan ioRequest),
-		mtus:         make(chan chan mtuReply),
-		names:        make(chan chan nameReply),
-		shutdowns:    make(chan struct{}),
-		shutdownDone: make(chan struct{}),
-		down:         true, // The device is initially down.
+		devices:   make(chan tun.Device),
+		events:    make(chan tun.Event),
+		close:     make(chan struct{}),
+		closed:    make(chan struct{}),
+		reads:     make(chan ioRequest),
+		writes:    make(chan ioRequest),
+		mtus:      make(chan chan mtuReply),
+		names:     make(chan chan nameReply),
+		shutdowns: make(chan chan struct{}),
+		down:      true, // The device is initially down.
 	}
 	downCh := make(chan struct{})
 	d.downCh.Store(downCh)
@@ -101,6 +113,13 @@ func newTUNDevices() *multiTUN {
 }
 
 func (d *multiTUN) run() {
+	defer func() {
+		// Devices removed after readDone are no longer in the local slice. Fence
+		// every launched pump before publishing multiTUN closure so native backend
+		// cleanup cannot return while a removed descriptor or event pump is alive.
+		d.pumps.Wait()
+		close(d.closed)
+	}()
 	defer func() {
 		if p := recover(); p != nil {
 			log.Printf("panic in multiTUN.run %s: %s", p, debug.Stack())
@@ -117,57 +136,88 @@ func (d *multiTUN) run() {
 		select {
 		case <-readDone:
 			// The oldest device has reached EOF, replace it.
+			if dev := devices[0]; !dev.runStarted {
+				// runDevice normally owns dev.Close. A superseded queued
+				// device can reach readDone without runDevice ever starting.
+				d.stopDevice(dev)
+			}
 			n := copy(devices, devices[1:])
 			devices = devices[:n]
 			if len(devices) > 0 {
 				// Start reading from the next device.
 				dev := devices[0]
 				readDone = dev.readDone
-				go d.readFrom(dev)
+				if !dev.readStarted {
+					dev.readStarted = true
+					d.startReadFrom(dev)
+				}
+				latest := devices[len(devices)-1]
+				if !latest.runStarted {
+					runDone = latest.closeDone
+					latest.runStarted = true
+					d.startRunDevice(latest)
+				}
 			}
 		case <-runDone:
 			// A device completed runDevice, replace it.
 			if len(devices) > 0 {
 				dev := devices[len(devices)-1]
 				runDone = dev.closeDone
-				go d.runDevice(dev)
+				if !dev.runStarted {
+					dev.runStarted = true
+					d.startRunDevice(dev)
+				}
 			}
-		case <-d.shutdowns:
+		case shutdownDone := <-d.shutdowns:
 			// Shut down all devices.
 			for _, dev := range devices {
-				close(dev.close)
-				<-dev.closeDone
-				<-dev.readDone
+				d.stopDevice(dev)
+				<-dev.finished
+				<-dev.readFinished
 			}
 			devices = nil
-			d.shutdownDone <- struct{}{}
+			readDone = nil
+			runDone = nil
+			close(shutdownDone)
 		case <-d.close:
 			var derr error
 			for _, dev := range devices {
-				if err := <-dev.closeDone; err != nil {
+				d.stopDevice(dev)
+				<-dev.finished
+				<-dev.readFinished
+				dev.errMu.Lock()
+				if err := dev.err; err != nil {
 					derr = err
 				}
+				dev.errMu.Unlock()
 			}
-			d.closeErr <- derr
+			d.closeMu.Lock()
+			d.closeErr = derr
+			d.closeMu.Unlock()
 			return
 		case dev := <-d.devices:
 			if len(devices) > 0 {
 				// Ask the most recent device to stop.
 				prev := devices[len(devices)-1]
-				close(prev.close)
+				prev.stop()
 			}
 			wrap := &tunDevice{
-				dev:       dev,
-				close:     make(chan struct{}),
-				closeDone: make(chan error),
-				readDone:  make(chan struct{}, 1),
+				dev:           dev,
+				close:         make(chan struct{}),
+				closeDone:     make(chan error, 1),
+				finished:      make(chan struct{}),
+				readDone:      make(chan struct{}, 1),
+				readFinished:  make(chan struct{}),
+				eventFinished: make(chan struct{}),
 			}
 			if len(devices) == 0 {
 				// Start using this first device.
 				readDone = wrap.readDone
-				go d.readFrom(wrap)
+				wrap.readStarted = true
+				d.startReadFrom(wrap)
 				runDone = wrap.closeDone
-				go d.runDevice(wrap)
+				wrap.runStarted = true
+				d.startRunDevice(wrap)
 			}
 			devices = append(devices, wrap)
 		case m := <-d.mtus:
@@ -188,6 +238,25 @@ func (d *multiTUN) run() {
 	}
 }
 
+// stopDevice terminates dev even if it was queued behind an older descriptor
+// and its read/write pumps never started.
+func (d *multiTUN) stopDevice(dev *tunDevice) {
+	dev.stop()
+	if !dev.runStarted {
+		err := dev.dev.Close()
+		dev.errMu.Lock()
+		dev.err = err
+		dev.errMu.Unlock()
+		close(dev.eventFinished)
+		dev.closeDone <- err
+		close(dev.finished)
+	}
+	if !dev.readStarted {
+		dev.readDone <- struct{}{}
+		close(dev.readFinished)
+	}
+}
+
 func (d *multiTUN) readFrom(dev *tunDevice) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -196,9 +265,8 @@ func (d *multiTUN) readFrom(dev *tunDevice) {
 		}
 	}()
 
-	defer func() {
-		dev.readDone <- struct{}{}
-	}()
+	defer close(dev.readFinished)
+	defer func() { dev.readDone <- struct{}{} }()
 	for {
 		select {
 		case r := <-d.reads:
@@ -216,10 +284,20 @@ func (d *multiTUN) readFrom(dev *tunDevice) {
 			if stop {
 				return
 			}
+		case <-dev.close:
+			return
 		case <-d.close:
 			return
 		}
 	}
+}
+
+func (d *multiTUN) startReadFrom(dev *tunDevice) {
+	d.pumps.Add(1)
+	go func() {
+		defer d.pumps.Done()
+		d.readFrom(dev)
+	}()
 }
 
 func (d *multiTUN) runDevice(dev *tunDevice) {
@@ -237,10 +315,17 @@ func (d *multiTUN) runDevice(dev *tunDevice) {
 		// when a new descriptor is created.
 		//
 		// Close it instead and hope that no packets are lost.
-		dev.closeDone <- dev.dev.Close()
+		err := dev.dev.Close()
+		<-dev.eventFinished
+		dev.errMu.Lock()
+		dev.err = err
+		dev.errMu.Unlock()
+		dev.closeDone <- err
+		close(dev.finished)
 	}()
 	// Pump device events.
 	go func() {
+		defer close(dev.eventFinished)
 		defer func() {
 			if p := recover(); p != nil {
 				log.Printf("panic in multiTUN.readFrom.events %s: %s", p, debug.Stack())
@@ -250,8 +335,16 @@ func (d *multiTUN) runDevice(dev *tunDevice) {
 		for {
 			select {
 			case e := <-dev.dev.Events():
-				d.events <- e
+				select {
+				case d.events <- e:
+				case <-dev.close:
+					return
+				case <-d.close:
+					return
+				}
 			case <-dev.close:
+				return
+			case <-d.close:
 				return
 			}
 		}
@@ -271,8 +364,22 @@ func (d *multiTUN) runDevice(dev *tunDevice) {
 	}
 }
 
+func (d *multiTUN) startRunDevice(dev *tunDevice) {
+	d.pumps.Add(1)
+	go func() {
+		defer d.pumps.Done()
+		d.runDevice(dev)
+	}()
+}
+
 func (d *multiTUN) add(dev tun.Device) {
-	d.devices <- dev
+	select {
+	case d.devices <- dev:
+	case <-d.closed:
+		if err := dev.Close(); err != nil {
+			log.Printf("closing TUN added after native shutdown: %v", err)
+		}
+	}
 }
 
 // Up brings the multiTUN up, allowing it to write packets
@@ -323,7 +430,7 @@ func (d *multiTUN) File() *os.File {
 }
 
 func (d *multiTUN) Read(data [][]byte, sizes []int, offset int) (int, error) {
-	r := make(chan ioReply)
+	r := make(chan ioReply, 1)
 	select {
 	// We don't care about d.downCh here, as it's fine
 	// to continue waiting until the tunnel is up again
@@ -339,7 +446,7 @@ func (d *multiTUN) Read(data [][]byte, sizes []int, offset int) (int, error) {
 }
 
 func (d *multiTUN) Write(data [][]byte, offset int) (int, error) {
-	r := make(chan ioReply)
+	r := make(chan ioReply, 1)
 	select {
 	case d.writes <- ioRequest{data, nil, offset, r}:
 		rep := <-r
@@ -360,17 +467,33 @@ func (d *multiTUN) Write(data [][]byte, offset int) (int, error) {
 }
 
 func (d *multiTUN) MTU() (int, error) {
-	r := make(chan mtuReply)
-	d.mtus <- r
-	rep := <-r
-	return rep.mtu, rep.err
+	r := make(chan mtuReply, 1)
+	select {
+	case d.mtus <- r:
+	case <-d.closed:
+		return 0, os.ErrClosed
+	}
+	select {
+	case rep := <-r:
+		return rep.mtu, rep.err
+	case <-d.closed:
+		return 0, os.ErrClosed
+	}
 }
 
 func (d *multiTUN) Name() (string, error) {
-	r := make(chan nameReply)
-	d.names <- r
-	rep := <-r
-	return rep.name, rep.err
+	r := make(chan nameReply, 1)
+	select {
+	case d.names <- r:
+	case <-d.closed:
+		return "", os.ErrClosed
+	}
+	select {
+	case rep := <-r:
+		return rep.name, rep.err
+	case <-d.closed:
+		return "", os.ErrClosed
+	}
 }
 
 func (d *multiTUN) Events() <-chan tun.Event {
@@ -378,13 +501,24 @@ func (d *multiTUN) Events() <-chan tun.Event {
 }
 
 func (d *multiTUN) Shutdown() {
-	d.shutdowns <- struct{}{}
-	<-d.shutdownDone
+	done := make(chan struct{})
+	select {
+	case d.shutdowns <- done:
+	case <-d.closed:
+		return
+	}
+	select {
+	case <-done:
+	case <-d.closed:
+	}
 }
 
 func (d *multiTUN) Close() error {
-	close(d.close)
-	return <-d.closeErr
+	d.closeOnce.Do(func() { close(d.close) })
+	<-d.closed
+	d.closeMu.Lock()
+	defer d.closeMu.Unlock()
+	return d.closeErr
 }
 
 func (d *multiTUN) BatchSize() int {

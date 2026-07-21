@@ -4,8 +4,6 @@
 package com.tailscale.ipn.ui.viewModel
 
 import android.app.Application
-import android.net.VpnService
-import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -36,24 +34,6 @@ class VpnViewModel(application: Application) : AndroidViewModel(application) {
   val _vpnActive = MutableStateFlow(false)
   val vpnActive: StateFlow<Boolean> = _vpnActive
   val TAG = "VpnViewModel"
-
-  init {
-    prepareVpn()
-  }
-
-  private fun prepareVpn() {
-    // Check if the user has granted permission yet.
-    if (!vpnPrepared.value) {
-      val vpnIntent = VpnService.prepare(getApplication())
-      if (vpnIntent != null) {
-        setVpnPrepared(false)
-        Log.d(TAG, "VpnService.prepare returned non-null intent")
-      } else {
-        setVpnPrepared(true)
-        Log.d(TAG, "VpnService.prepare returned null intent, VPN is already prepared")
-      }
-    }
-  }
 
   fun setVpnActive(isActive: Boolean) {
     _vpnActive.value = isActive

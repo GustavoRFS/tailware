@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">कनेक्शन टॉगल को चालू रखना अनिवार्य करें</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">उपयोगकर्ता को Tailscale डिस्कनेक्ट करने से रोकता है।</string>
+    <string name="exit_node_id">एग्ज़िट नोड आईडी</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">Tailscale क्लाइंट को हमेशा दी गई आईडी वाला एग्ज़िट नोड इस्तेमाल करने के लिए बाध्य करता है।</string>
+    <string name="managed_by_organization_name">इसके द्वारा प्रबंधित – संगठन का नाम</string>
+    <string name="shows_the_given_organization_name_in_the_client">क्लाइंट में दिया गया संगठन का नाम दिखाता है।</string>
+    <string name="managed_by_caption">इसके द्वारा प्रबंधित – कैप्शन</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">संगठन के नाम के पास दिया गया कैप्शन दिखाता है।</string>
+    <string name="managed_by_url">इसके द्वारा प्रबंधित – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">संगठन के नाम के पास सहायता संसाधन खोलने का बटन दिखाता है।</string>
+    <string name="required_suggested_tailnet">ज़रूरी/सुझाया गया Tailnet</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">tailnet नीति संगठन को एक tailnet तय करने देती है, जिसका पहचान प्रदाता साइन-इन पेज पर इस्तेमाल होगा। मान required: से शुरू हो तो Tailscale उसी प्रदाता को अनिवार्य करता है और किसी अन्य तरीके से साइन-इन की अनुमति नहीं देता।</string>
+    <string name="custom_control_server_url">कस्टम कंट्रोल सर्वर URL</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">यहाँ Headscale इंस्टेंस जैसे कस्टम समन्वय सर्वर का URL दें।</string>
+    <string name="hidden_network_devices">छिपे हुए नेटवर्क डिवाइस</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">क्लाइंट की डिवाइस सूची से नेटवर्क डिवाइस की तय श्रेणियाँ छिपाता है।</string>
+    <string name="allow_lan_access_when_using_an_exit_node">एग्ज़िट नोड के साथ LAN एक्सेस की अनुमति दें</string>
+    <string name="enable_posture_checking">डिवाइस स्थिति जाँच चालू करें</string>
+    <string name="device_serial_number">Tailscale चलाने वाले डिवाइस का सीरियल नंबर</string>
+    <string name="device_serial_number_descr">व्यवस्थापकों को MDM से डिवाइस का सीरियल नंबर Tailscale क्लाइंट तक भेजने देता है।</string>
+    <string name="use_tailscale_dns_settings">Tailscale DNS सेटिंग इस्तेमाल करें</string>
+    <string name="use_tailscale_subnets">Tailscale सबनेट इस्तेमाल करें</string>
+    <string name="allow_incoming_connections">आने वाले कनेक्शन की अनुमति दें</string>
+    <string name="exit_node_picker_visibility">एग्ज़िट नोड चयन की दृश्यता</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">ऐप के मुख्य दृश्य में एग्ज़िट नोड चयन दिखाता या छिपाता है।</string>
+    <string name="manage_tailnet_lock_visibility">Tailnet Lock प्रबंधन की दृश्यता</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">Tailnet Lock कॉन्फ़िगरेशन इंटरफ़ेस दिखाता या छिपाता है।</string>
+    <string name="run_as_exit_node_visibility">एग्ज़िट नोड के रूप में चलाने की दृश्यता</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">Android डिवाइस को एग्ज़िट नोड के रूप में चलाने का इंटरफ़ेस दिखाता या छिपाता है।</string>
+    <string name="excluded_packages">बाहर रखे गए पैकेज</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">उन ऐप्स को तय करता है जिन्हें Tailscale चलने पर भी Tailscale रूट और DNS से बाहर रखा जाएगा। बाकी सभी ऐप Tailscale इस्तेमाल करेंगे।</string>
+    <string name="included_packages">शामिल पैकेज</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">उन ऐप्स को तय करता है जो Tailscale चलने पर हमेशा Tailscale रूट और DNS इस्तेमाल करेंगे। सूची खाली न हो तो बाकी ऐप Tailscale इस्तेमाल नहीं करेंगे।</string>
+    <string name="auth_key">प्रमाणीकरण कुंजी</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">साइन-इन में इस्तेमाल होने वाली प्रमाणीकरण कुंजी तय करता है।</string>
+    <string name="hostname">होस्टनेम</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">अपने-आप चुने गए नाम के बदले इस्तेमाल होने वाला डिवाइस नाम तय करता है।</string>
+    <string name="onboarding_flow">शुरुआती प्रक्रिया छोड़ें</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">ऐप पहली बार खोलने पर दिखाया जाने वाला परिचय पेज छोड़ देता है।</string>
+    <string name="enable_hardware_attestation">हार्डवेयर सत्यापन चालू करें</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">नोड पहचान को डिवाइस से बाँधने के लिए हार्डवेयर-सुरक्षित कुंजियाँ इस्तेमाल करता है।</string>
+    <string-array name="hidden_network_devices_labels"><item>मौजूदा उपयोगकर्ता के डिवाइस</item><item>अन्य उपयोगकर्ताओं के डिवाइस</item><item>टैग किए गए डिवाइस</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>हमेशा</item><item>कभी नहीं</item><item>उपयोगकर्ता तय करे</item></string-array>
+    <string-array name="show_hide_labels"><item>दिखाएँ</item><item>छिपाएँ</item></string-array>
+</resources>

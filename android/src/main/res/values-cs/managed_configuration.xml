@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">Vynutit zapnutý přepínač připojení</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">Zabrání uživateli odpojit Tailscale.</string>
+    <string name="exit_node_id">ID výstupního uzlu</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">Vynutí, aby klient Tailscale vždy používal výstupní uzel se zadaným ID.</string>
+    <string name="managed_by_organization_name">Spravováno – název organizace</string>
+    <string name="shows_the_given_organization_name_in_the_client">Zobrazí v klientovi zadaný název organizace.</string>
+    <string name="managed_by_caption">Spravováno – popisek</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">Zobrazí v klientovi zadaný popisek vedle názvu organizace.</string>
+    <string name="managed_by_url">Spravováno – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">Vedle názvu organizace zobrazí tlačítko pro otevření zdrojů podpory.</string>
+    <string name="required_suggested_tailnet">Povinný/doporučený Tailnet</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">Zásada tailnet umožňuje organizaci určit tailnet, jehož poskytovatel identity se použije na přihlašovací stránce. Pokud hodnota začíná required:, Tailscale tohoto poskytovatele vynutí a nepovolí jiný způsob přihlášení.</string>
+    <string name="custom_control_server_url">URL vlastního řídicího serveru</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">Do tohoto pole zadejte URL vlastního koordinačního serveru, například instance Headscale.</string>
+    <string name="hidden_network_devices">Skrytá síťová zařízení</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">Skryje zadané kategorie síťových zařízení ze seznamu zařízení v klientovi.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">Povolit přístup k LAN při použití výstupního uzlu</string>
+    <string name="enable_posture_checking">Zapnout kontrolu stavu zařízení</string>
+    <string name="device_serial_number">Sériové číslo zařízení, na kterém běží Tailscale</string>
+    <string name="device_serial_number_descr">Umožní správcům předat sériové číslo zařízení klientovi Tailscale prostřednictvím MDM.</string>
+    <string name="use_tailscale_dns_settings">Používat nastavení DNS Tailscale</string>
+    <string name="use_tailscale_subnets">Používat podsítě Tailscale</string>
+    <string name="allow_incoming_connections">Povolit příchozí připojení</string>
+    <string name="exit_node_picker_visibility">Viditelnost výběru výstupního uzlu</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">Zobrazí nebo skryje výběr výstupního uzlu v hlavním zobrazení aplikace.</string>
+    <string name="manage_tailnet_lock_visibility">Viditelnost správy Tailnet Lock</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">Zobrazí nebo skryje rozhraní konfigurace Tailnet Lock.</string>
+    <string name="run_as_exit_node_visibility">Viditelnost režimu výstupního uzlu</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">Zobrazí nebo skryje rozhraní pro použití zařízení Android jako výstupního uzlu.</string>
+    <string name="excluded_packages">Vyloučené balíčky</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">Určuje aplikace vyloučené z tras a DNS Tailscale, i když je Tailscale spuštěný. Všechny ostatní aplikace používají Tailscale.</string>
+    <string name="included_packages">Zahrnuté balíčky</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">Určuje aplikace, které při spuštěném Tailscale vždy používají trasy a DNS Tailscale. Není-li seznam prázdný, ostatní aplikace Tailscale nepoužívají.</string>
+    <string name="auth_key">Ověřovací klíč</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">Nastaví ověřovací klíč používaný k přihlášení.</string>
+    <string name="hostname">Název hostitele</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">Určuje název zařízení použitý místo automatického výchozího názvu.</string>
+    <string name="onboarding_flow">Přeskočit úvodní postup</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">Přeskočí úvodní stránku zobrazenou při prvním otevření aplikace.</string>
+    <string name="enable_hardware_attestation">Zapnout hardwarovou atestaci</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">Použije hardwarově chráněné klíče k navázání identity uzlu na zařízení.</string>
+    <string-array name="hidden_network_devices_labels"><item>Zařízení aktuálního uživatele</item><item>Zařízení ostatních uživatelů</item><item>Označená zařízení</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>Vždy</item><item>Nikdy</item><item>Rozhodne uživatel</item></string-array>
+    <string-array name="show_hide_labels"><item>Zobrazit</item><item>Skrýt</item></string-array>
+</resources>

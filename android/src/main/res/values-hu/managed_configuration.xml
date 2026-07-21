@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">Bekapcsolt kapcsolódási kapcsoló kényszerítése</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">Megakadályozza, hogy a felhasználó leválassza a Tailscale kapcsolatot.</string>
+    <string name="exit_node_id">Kilépési csomópont azonosítója</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">Arra kényszeríti a Tailscale klienst, hogy mindig a megadott azonosítójú kilépési csomópontot használja.</string>
+    <string name="managed_by_organization_name">Kezeli – szervezet neve</string>
+    <string name="shows_the_given_organization_name_in_the_client">Megjeleníti a megadott szervezetnevet a kliensben.</string>
+    <string name="managed_by_caption">Kezeli – felirat</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">Megjeleníti a megadott feliratot a szervezet neve mellett.</string>
+    <string name="managed_by_url">Kezeli – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">A szervezet neve mellett gombot jelenít meg a támogatási források megnyitásához.</string>
+    <string name="required_suggested_tailnet">Kötelező/javasolt Tailnet</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">A tailnet házirend lehetővé teszi, hogy a szervezet megadjon egy tailnet hálózatot, amelynek identitásszolgáltatója jelenik meg a bejelentkezési oldalon. Ha az érték required: előtaggal kezdődik, a Tailscale ezt a szolgáltatót kényszeríti, és más bejelentkezést nem enged.</string>
+    <string name="custom_control_server_url">Egyéni vezérlőkiszolgáló URL-je</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">Itt adható meg egy egyéni koordinációs kiszolgáló URL-je, például egy Headscale-példányé.</string>
+    <string name="hidden_network_devices">Rejtett hálózati eszközök</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">Elrejti a hálózati eszközök megadott kategóriáit a kliens eszközlistájából.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">LAN-hozzáférés engedélyezése kilépési csomóponttal</string>
+    <string name="enable_posture_checking">Eszközállapot-ellenőrzés bekapcsolása</string>
+    <string name="device_serial_number">A Tailscale alkalmazást futtató eszköz sorozatszáma</string>
+    <string name="device_serial_number_descr">Lehetővé teszi a rendszergazdáknak, hogy MDM használatával átadják az eszköz sorozatszámát a Tailscale kliensnek.</string>
+    <string name="use_tailscale_dns_settings">Tailscale DNS-beállítások használata</string>
+    <string name="use_tailscale_subnets">Tailscale-alhálózatok használata</string>
+    <string name="allow_incoming_connections">Bejövő kapcsolatok engedélyezése</string>
+    <string name="exit_node_picker_visibility">Kilépésicsomópont-választó láthatósága</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">Megjeleníti vagy elrejti a kilépésicsomópont-választót az alkalmazás főnézetében.</string>
+    <string name="manage_tailnet_lock_visibility">Tailnet Lock kezelésének láthatósága</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">Megjeleníti vagy elrejti a Tailnet Lock beállítási felületét.</string>
+    <string name="run_as_exit_node_visibility">Kilépési csomópontként futtatás láthatósága</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">Megjeleníti vagy elrejti az Android-eszköz kilépési csomópontként való futtatásának felületét.</string>
+    <string name="excluded_packages">Kizárt csomagok</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">Megadja a Tailscale útvonalakból és DNS-ből kizárt alkalmazásokat akkor is, ha a Tailscale fut. Minden más alkalmazás a Tailscale szolgáltatást használja.</string>
+    <string name="included_packages">Bevont csomagok</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">Megadja az alkalmazásokat, amelyek futó Tailscale mellett mindig Tailscale útvonalakat és DNS-t használnak. Ha a lista nem üres, a többi alkalmazás nem használ Tailscale kapcsolatot.</string>
+    <string name="auth_key">Hitelesítési kulcs</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">Meghatározza a bejelentkezéshez használt hitelesítési kulcsot.</string>
+    <string name="hostname">Állomásnév</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">Megadja az automatikus alapértelmezett helyett használt eszköznevet.</string>
+    <string name="onboarding_flow">Bevezető folyamat kihagyása</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">Kihagyja az alkalmazás első megnyitásakor megjelenő bemutatkozó oldalt.</string>
+    <string name="enable_hardware_attestation">Hardveres hitelesítés bekapcsolása</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">Hardverrel védett kulcsokkal köti a csomópont identitását az eszközhöz.</string>
+    <string-array name="hidden_network_devices_labels"><item>Jelenlegi felhasználó eszközei</item><item>Más felhasználók eszközei</item><item>Címkézett eszközök</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>Mindig</item><item>Soha</item><item>A felhasználó dönt</item></string-array>
+    <string-array name="show_hide_labels"><item>Megjelenítés</item><item>Elrejtés</item></string-array>
+</resources>

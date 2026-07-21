@@ -23,7 +23,11 @@ public final class StopVPNWorker extends Worker {
     @NonNull
     @Override
     public Result doWork() {
-        UninitializedApp.get().stopVPN();
+        /*
+         * Retired compatibility shell. See StartVPNWorker.doWork(). An old persisted
+         * "ipn-disconnect-vpn" request must not become a newer OFF generation after an APK
+         * update and cancel the user's current ON choice.
+         */
         return Result.success();
     }
 }

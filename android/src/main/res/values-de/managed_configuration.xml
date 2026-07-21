@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">Aktivierten Verbindungsschalter erzwingen</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">Verhindert, dass der Benutzer die Tailscale-Verbindung trennt.</string>
+    <string name="exit_node_id">Exit-Node-ID</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">Erzwingt, dass der Tailscale-Client immer den Exit-Node mit der angegebenen ID verwendet.</string>
+    <string name="managed_by_organization_name">Verwaltet von – Organisationsname</string>
+    <string name="shows_the_given_organization_name_in_the_client">Zeigt den angegebenen Organisationsnamen im Client an.</string>
+    <string name="managed_by_caption">Verwaltet von – Beschriftung</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">Zeigt die angegebene Beschriftung neben dem Organisationsnamen im Client an.</string>
+    <string name="managed_by_url">Verwaltet von – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">Zeigt neben dem Organisationsnamen eine Schaltfläche zum Öffnen von Supportressourcen an.</string>
+    <string name="required_suggested_tailnet">Erforderliches/empfohlenes Tailnet</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">Mit der tailnet-Richtlinie kann die Organisation ein tailnet angeben; dessen Identitätsanbieter wird auf der Anmeldeseite verwendet. Beginnt der Wert mit required:, erzwingt Tailscale diesen Identitätsanbieter und lässt keine andere Anmeldung zu.</string>
+    <string name="custom_control_server_url">URL des benutzerdefinierten Steuerungsservers</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">Geben Sie hier die URL eines benutzerdefinierten Koordinationsservers an, beispielsweise einer Headscale-Instanz.</string>
+    <string name="hidden_network_devices">Ausgeblendete Netzwerkgeräte</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">Blendet die angegebenen Kategorien von Netzwerkgeräten aus der Geräteliste des Clients aus.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">LAN-Zugriff bei Verwendung eines Exit-Nodes erlauben</string>
+    <string name="enable_posture_checking">Gerätezustandsprüfung aktivieren</string>
+    <string name="device_serial_number">Seriennummer des Geräts, auf dem Tailscale ausgeführt wird</string>
+    <string name="device_serial_number_descr">Ermöglicht Administratoren, die Seriennummer des Geräts per MDM an den Tailscale-Client zu übergeben.</string>
+    <string name="use_tailscale_dns_settings">Tailscale-DNS-Einstellungen verwenden</string>
+    <string name="use_tailscale_subnets">Tailscale-Subnetze verwenden</string>
+    <string name="allow_incoming_connections">Eingehende Verbindungen erlauben</string>
+    <string name="exit_node_picker_visibility">Sichtbarkeit der Exit-Node-Auswahl</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">Blendet die Exit-Node-Auswahl in der Hauptansicht der App ein oder aus.</string>
+    <string name="manage_tailnet_lock_visibility">Sichtbarkeit der Tailnet-Lock-Verwaltung</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">Blendet die Konfigurationsoberfläche für Tailnet Lock ein oder aus.</string>
+    <string name="run_as_exit_node_visibility">Sichtbarkeit von „Als Exit-Node ausführen“</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">Blendet die Oberfläche ein oder aus, mit der das Android-Gerät als Exit-Node ausgeführt wird.</string>
+    <string name="excluded_packages">Ausgeschlossene Pakete</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">Gibt Apps an, die auch bei laufendem Tailscale von Tailscale-Routen und DNS ausgeschlossen werden. Alle anderen Apps verwenden Tailscale.</string>
+    <string name="included_packages">Einbezogene Pakete</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">Gibt Apps an, die bei laufendem Tailscale immer Tailscale-Routen und DNS verwenden. Ist die Liste nicht leer, verwenden alle anderen Apps Tailscale nicht.</string>
+    <string name="auth_key">Authentifizierungsschlüssel</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">Legt einen Authentifizierungsschlüssel für die Anmeldung fest.</string>
+    <string name="hostname">Hostname</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">Legt einen Gerätenamen fest, der anstelle des automatisch erzeugten Namens verwendet wird.</string>
+    <string name="onboarding_flow">Einführungsablauf überspringen</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">Überspringt die Einführungsseite, die beim ersten Öffnen der App angezeigt wird.</string>
+    <string name="enable_hardware_attestation">Hardwareattestierung aktivieren</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">Verwendet hardwaregestützte Schlüssel, um die Knotenidentität an das Gerät zu binden.</string>
+    <string-array name="hidden_network_devices_labels">
+        <item>Geräte des aktuellen Benutzers</item>
+        <item>Geräte anderer Benutzer</item>
+        <item>Markierte Geräte</item>
+    </string-array>
+    <string-array name="always_never_userdecides_labels">
+        <item>Immer</item>
+        <item>Nie</item>
+        <item>Benutzer entscheidet</item>
+    </string-array>
+    <string-array name="show_hide_labels">
+        <item>Anzeigen</item>
+        <item>Ausblenden</item>
+    </string-array>
+</resources>

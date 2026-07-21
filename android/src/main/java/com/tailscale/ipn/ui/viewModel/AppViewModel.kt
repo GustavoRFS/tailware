@@ -5,8 +5,6 @@ package com.tailscale.ipn.ui.viewModel
 
 import android.app.Application
 import android.net.Uri
-import android.net.VpnService
-import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
@@ -34,6 +32,19 @@ class AppViewModelFactory(val application: Application, private val taildropProm
   }
 }
 
+internal class LatestErrorPublicationCoordinator {
+  private var generation = 0L
+
+  @Synchronized fun publish(): Long = ++generation
+
+  @Synchronized
+  fun clearIfCurrent(publication: Long): Boolean {
+    if (generation != publication) return false
+    generation += 1
+    return true
+  }
+}
+
 // Application context-aware ViewModel used to track app-wide VPN and Taildrop state.
 // This must be application-scoped because Tailscale may be enabled, disabled, or used for
 // file transfers (Taildrop) outside the activity lifecycle.
@@ -53,6 +64,9 @@ class AppViewModel(application: Application, private val taildropPrompt: Flow<Un
   // VpnServiceBuilder.establish, and consumed by UI to reflect VPN state.
   val _vpnActive = MutableStateFlow(false)
   val vpnActive: StateFlow<Boolean> = _vpnActive
+  private val _vpnServiceError = MutableStateFlow<String?>(null)
+  val vpnServiceError: StateFlow<String?> = _vpnServiceError
+  private val vpnServiceErrorPublications = LatestErrorPublicationCoordinator()
   // Select Taildrop directory
   var directoryPickerLauncher: ActivityResultLauncher<Uri?>? = null
   private val _triggerDirectoryPicker = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -61,7 +75,6 @@ class AppViewModel(application: Application, private val taildropPrompt: Flow<Un
 
   init {
     observeIncomingTaildrop()
-    prepareVpn()
   }
 
   private fun observeIncomingTaildrop() {
@@ -75,20 +88,6 @@ class AppViewModel(application: Application, private val taildropPrompt: Flow<Un
 
   fun requestDirectoryPicker() {
     _triggerDirectoryPicker.tryEmit(Unit)
-  }
-
-  private fun prepareVpn() {
-    // Check if the user has granted permission yet.
-    if (!vpnPrepared.value) {
-      val vpnIntent = VpnService.prepare(getApplication())
-      if (vpnIntent != null) {
-        setVpnPrepared(false)
-        Log.d(TAG, "VpnService.prepare returned non-null intent")
-      } else {
-        setVpnPrepared(true)
-        Log.d(TAG, "VpnService.prepare returned null intent, VPN is already prepared")
-      }
-    }
   }
 
   fun checkIfTaildropDirectorySelected() {
@@ -115,5 +114,26 @@ class AppViewModel(application: Application, private val taildropPrompt: Flow<Un
 
   fun setVpnPrepared(isPrepared: Boolean) {
     _vpnPrepared.value = isPrepared
+  }
+
+  @Synchronized
+  fun setVpnServiceError(message: String?) {
+    publishVpnServiceError(message)
+  }
+
+  /** Publishes a replayable global error and returns its exact ownership token. */
+  @Synchronized
+  internal fun publishVpnServiceError(message: String?): Long {
+    val publication = vpnServiceErrorPublications.publish()
+    _vpnServiceError.value = message
+    return publication
+  }
+
+  /** Clears only the error still owned by [publication], preserving any newer command error. */
+  @Synchronized
+  internal fun clearVpnServiceError(publication: Long): Boolean {
+    if (!vpnServiceErrorPublications.clearIfCurrent(publication)) return false
+    _vpnServiceError.value = null
+    return true
   }
 }

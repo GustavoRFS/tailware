@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="force_enabled_connection_toggle">Επιβολή ενεργοποιημένου διακόπτη σύνδεσης</string>
+    <string name="prevents_the_user_from_disconnecting_tailscale">Εμποδίζει τον χρήστη να αποσυνδέσει το Tailscale.</string>
+    <string name="exit_node_id">Αναγνωριστικό κόμβου εξόδου</string>
+    <string name="forces_the_tailscale_client_to_always_use_the_exit_node_with_the_given_id">Υποχρεώνει το πρόγραμμα-πελάτη Tailscale να χρησιμοποιεί πάντα τον κόμβο εξόδου με το συγκεκριμένο αναγνωριστικό.</string>
+    <string name="managed_by_organization_name">Διαχείριση από – όνομα οργανισμού</string>
+    <string name="shows_the_given_organization_name_in_the_client">Εμφανίζει το συγκεκριμένο όνομα οργανισμού στο πρόγραμμα-πελάτη.</string>
+    <string name="managed_by_caption">Διαχείριση από – λεζάντα</string>
+    <string name="shows_the_given_caption_next_to_the_organization_name_in_the_client">Εμφανίζει τη συγκεκριμένη λεζάντα δίπλα στο όνομα οργανισμού.</string>
+    <string name="managed_by_url">Διαχείριση από – URL</string>
+    <string name="shows_a_button_to_open_support_resources_next_to_the_organization_name">Εμφανίζει δίπλα στο όνομα οργανισμού ένα κουμπί για τους πόρους υποστήριξης.</string>
+    <string name="required_suggested_tailnet">Απαιτούμενο/προτεινόμενο Tailnet</string>
+    <string name="the_tailnet_policy_allows_the_organization_to_specify_a_tailnet">Η πολιτική tailnet επιτρέπει στον οργανισμό να ορίσει ένα tailnet, του οποίου ο πάροχος ταυτότητας θα χρησιμοποιηθεί στη σελίδα σύνδεσης. Αν η τιμή αρχίζει με required:, το Tailscale επιβάλλει αυτόν τον πάροχο και δεν επιτρέπει άλλον τρόπο σύνδεσης.</string>
+    <string name="custom_control_server_url">URL προσαρμοσμένου διακομιστή ελέγχου</string>
+    <string name="use_this_field_to_specify_a_custom_coordination_server_url_such_as_a_headscale_instance">Χρησιμοποιήστε αυτό το πεδίο για το URL ενός προσαρμοσμένου διακομιστή συντονισμού, όπως μια παρουσία Headscale.</string>
+    <string name="hidden_network_devices">Κρυφές συσκευές δικτύου</string>
+    <string name="hides_the_specified_categories_of_network_devices_from_the_devices_list_in_the_client">Αποκρύπτει τις καθορισμένες κατηγορίες συσκευών δικτύου από τη λίστα συσκευών.</string>
+    <string name="allow_lan_access_when_using_an_exit_node">Να επιτρέπεται πρόσβαση LAN με κόμβο εξόδου</string>
+    <string name="enable_posture_checking">Ενεργοποίηση ελέγχου κατάστασης συσκευής</string>
+    <string name="device_serial_number">Σειριακός αριθμός της συσκευής που εκτελεί το Tailscale</string>
+    <string name="device_serial_number_descr">Επιτρέπει στους διαχειριστές να στέλνουν μέσω MDM τον σειριακό αριθμό της συσκευής στο πρόγραμμα-πελάτη Tailscale.</string>
+    <string name="use_tailscale_dns_settings">Χρήση ρυθμίσεων DNS Tailscale</string>
+    <string name="use_tailscale_subnets">Χρήση υποδικτύων Tailscale</string>
+    <string name="allow_incoming_connections">Να επιτρέπονται εισερχόμενες συνδέσεις</string>
+    <string name="exit_node_picker_visibility">Ορατότητα επιλογέα κόμβου εξόδου</string>
+    <string name="shows_or_hides_the_exit_node_picker_in_the_main_view_of_the_app">Εμφανίζει ή αποκρύπτει τον επιλογέα κόμβου εξόδου στην κύρια προβολή της εφαρμογής.</string>
+    <string name="manage_tailnet_lock_visibility">Ορατότητα διαχείρισης Tailnet Lock</string>
+    <string name="shows_or_hides_the_tailnet_lock_configuration_ui">Εμφανίζει ή αποκρύπτει το περιβάλλον ρύθμισης Tailnet Lock.</string>
+    <string name="run_as_exit_node_visibility">Ορατότητα λειτουργίας ως κόμβος εξόδου</string>
+    <string name="shows_or_hides_the_ui_to_run_the_android_device_as_an_exit_node">Εμφανίζει ή αποκρύπτει το περιβάλλον για λειτουργία της συσκευής Android ως κόμβου εξόδου.</string>
+    <string name="excluded_packages">Εξαιρούμενα πακέτα</string>
+    <string name="specifies_a_list_of_apps_that_will_be_excluded_from_tailscale_routes_and_dns_even_when_tailscale_is_running_all_other_apps_will_use_tailscale">Καθορίζει εφαρμογές που εξαιρούνται από τις διαδρομές και το DNS Tailscale ακόμη και όταν εκτελείται το Tailscale. Όλες οι άλλες εφαρμογές χρησιμοποιούν το Tailscale.</string>
+    <string name="included_packages">Συμπεριλαμβανόμενα πακέτα</string>
+    <string name="specifies_a_list_of_apps_that_will_always_use_tailscale_routes_and_dns_when_tailscale_is_running_all_other_apps_won_t_use_tailscale_if_this_value_is_non_empty">Καθορίζει εφαρμογές που χρησιμοποιούν πάντα τις διαδρομές και το DNS Tailscale όταν εκτελείται το Tailscale. Αν η λίστα δεν είναι κενή, οι άλλες εφαρμογές δεν χρησιμοποιούν το Tailscale.</string>
+    <string name="auth_key">Κλειδί ελέγχου ταυτότητας</string>
+    <string name="defines_an_auth_key_that_will_be_used_for_login">Ορίζει ένα κλειδί ελέγχου ταυτότητας για τη σύνδεση.</string>
+    <string name="hostname">Όνομα κεντρικού υπολογιστή</string>
+    <string name="specifies_a_device_name_to_be_used_instead_of_the_automatic_default">Ορίζει όνομα συσκευής αντί για το αυτόματο προεπιλεγμένο.</string>
+    <string name="onboarding_flow">Παράλειψη αρχικής περιήγησης</string>
+    <string name="skips_the_intro_page_shown_to_users_that_open_the_app_for_the_first_time">Παραλείπει την εισαγωγική σελίδα κατά το πρώτο άνοιγμα της εφαρμογής.</string>
+    <string name="enable_hardware_attestation">Ενεργοποίηση βεβαίωσης υλικού</string>
+    <string name="use_hardware_backed_keys_to_bind_node_identity_to_the_device">Χρησιμοποιεί κλειδιά προστατευμένα από το υλικό για σύνδεση της ταυτότητας κόμβου με τη συσκευή.</string>
+    <string-array name="hidden_network_devices_labels"><item>Συσκευές τρέχοντος χρήστη</item><item>Συσκευές άλλων χρηστών</item><item>Συσκευές με ετικέτα</item></string-array>
+    <string-array name="always_never_userdecides_labels"><item>Πάντα</item><item>Ποτέ</item><item>Αποφασίζει ο χρήστης</item></string-array>
+    <string-array name="show_hide_labels"><item>Εμφάνιση</item><item>Απόκρυψη</item></string-array>
+</resources>

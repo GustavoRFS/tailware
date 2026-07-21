@@ -9,10 +9,12 @@ import android.content.Intent
 import android.content.RestrictionsManager
 import com.tailscale.ipn.App
 import com.tailscale.ipn.util.TSLog
+import com.tailscale.ipn.wear.TailwareActivationCapability
 
 class MDMSettingsChangedReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context?, intent: Intent?) {
     if (intent?.action == Intent.ACTION_APPLICATION_RESTRICTIONS_CHANGED) {
+      if (!TailwareActivationCapability.hasEngineCapability()) return
       TSLog.d("syspolicy", "MDM settings changed")
       val restrictionsManager =
           context?.getSystemService(Context.RESTRICTIONS_SERVICE) as RestrictionsManager
